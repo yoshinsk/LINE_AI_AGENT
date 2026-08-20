@@ -1,4 +1,4 @@
-# C:\Users\Yoshi\Documents\GitHub\LINE_AI_AGENT\scripts\status-worker.ps1
+# <PROJECT_ROOT>\scripts\status-worker.ps1
 # LINE AI Agent Windowsワーカーのローカルプロセス状態を確認します。
 
 $ErrorActionPreference = "Stop"

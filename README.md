@@ -6,7 +6,7 @@ LINE公式アカウントのWebhookをVPSで受け、MariaDBに会話・添付�
 
 ```text
 LINE
-  -> https://api.nsksys.com/line/
+  -> https://example.com/line/
      -> PHP Webhook入口
      -> MariaDB db_codex_line
      -> Windowsワーカーが internal.php からジョブ取得
@@ -47,19 +47,19 @@ LINEの `file` / `image` / `video` / `audio` メッセージを受けると、VP
 公開先:
 
 ```text
-/var/www/vhosts/nsksys.com/api.nsksys.com/public/line/
+/path/to/vhost/public/line/
 ```
 
 非公開設定:
 
 ```text
-/var/www/vhosts/nsksys.com/api.nsksys.com/private/line-ai-agent.env
+/path/to/vhost/private/line-ai-agent.env
 ```
 
 添付保存:
 
 ```text
-/var/www/vhosts/nsksys.com/api.nsksys.com/private/attachments/
+/path/to/vhost/private/attachments/
 ```
 
 DB初期化:
@@ -71,7 +71,7 @@ mysql -u db_codex_line -p db_codex_line < deploy/schema.sql
 Webhook URL:
 
 ```text
-https://api.nsksys.com/line/
+https://example.com/line/
 ```
 
 ## VPS側env
@@ -97,7 +97,7 @@ notepad .env
 
 最低限、以下を設定します。
 
-- `LINE_AGENT_API_BASE_URL=https://api.nsksys.com/line/internal.php`
+- `LINE_AGENT_API_BASE_URL=https://example.com/line/internal.php`
 - `LINE_AI_AGENT_WORKER_TOKEN`
 - `CODEX_COMMAND`
 - `CODEX_PROJECTS_JSON`
@@ -133,7 +133,7 @@ VPS側は配置後に以下を確認します。
 ```bash
 /opt/plesk/php/8.5/bin/php -l public/line/index.php
 /opt/plesk/php/8.5/bin/php -l public/line/internal.php
-curl -sS https://api.nsksys.com/line/
+curl -sS https://example.com/line/
 ```
 
 ## 公式仕様の前提

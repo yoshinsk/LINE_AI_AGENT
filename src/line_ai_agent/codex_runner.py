@@ -1,4 +1,4 @@
-r"""C:\Users\Yoshi\Documents\GitHub\LINE_AI_AGENT\src\line_ai_agent\codex_runner.py
+r"""<PROJECT_ROOT>\src\line_ai_agent\codex_runner.py
 
 LINEジョブ、会話履歴、検索ナレッジ、添付ファイルをCodex CLIへ渡して最終回答を回収します。
 """

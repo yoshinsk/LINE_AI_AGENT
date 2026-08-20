@@ -1,4 +1,4 @@
-r"""C:\Users\Yoshi\Documents\GitHub\LINE_AI_AGENT\tests\test_codex_prompt.py
+r"""<PROJECT_ROOT>\tests\test_codex_prompt.py
 
 Codexへ渡すプロンプトに会話履歴、検索ナレッジ、添付パスが入ることを検証します。
 """

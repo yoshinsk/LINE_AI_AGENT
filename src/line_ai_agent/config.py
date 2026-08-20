@@ -1,4 +1,4 @@
-r"""C:\Users\Yoshi\Documents\GitHub\LINE_AI_AGENT\src\line_ai_agent\config.py
+r"""<PROJECT_ROOT>\src\line_ai_agent\config.py
 
 Windowsワーカーの.env読込と実行設定を提供します。
 """

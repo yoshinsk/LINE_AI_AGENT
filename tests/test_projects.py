@@ -1,4 +1,4 @@
-r"""C:\Users\Yoshi\Documents\GitHub\LINE_AI_AGENT\tests\test_projects.py
+r"""<PROJECT_ROOT>\tests\test_projects.py
 
 プロジェクト別名解決とローカル固定応答コマンドを検証します。
 """

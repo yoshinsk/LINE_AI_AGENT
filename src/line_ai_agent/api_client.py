@@ -1,4 +1,4 @@
-r"""C:\Users\Yoshi\Documents\GitHub\LINE_AI_AGENT\src\line_ai_agent\api_client.py
+r"""<PROJECT_ROOT>\src\line_ai_agent\api_client.py
 
 WindowsワーカーからVPS内部APIへアクセスする小さなHTTPクライアントです。
 """

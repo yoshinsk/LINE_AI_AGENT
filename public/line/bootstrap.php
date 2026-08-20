@@ -1,6 +1,6 @@
 <?php
 /**
- * C:\Users\Yoshi\Documents\GitHub\LINE_AI_AGENT\public\line\bootstrap.php
+ * <PROJECT_ROOT>\public\line\bootstrap.php
  *
  * LINE Webhook入口とWindowsワーカー内部APIで共有する設定読込、DB接続、LINE送信、会話保存、検索処理です。
  */

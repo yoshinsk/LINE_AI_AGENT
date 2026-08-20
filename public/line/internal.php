@@ -1,6 +1,6 @@
 <?php
 /**
- * C:\Users\Yoshi\Documents\GitHub\LINE_AI_AGENT\public\line\internal.php
+ * <PROJECT_ROOT>\public\line\internal.php
  *
  * Windows常駐ワーカーがHTTPS経由でジョブ取得、完了報告、ナレッジ検索、heartbeatを行う内部APIです。
  */

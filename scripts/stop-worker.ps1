@@ -1,4 +1,4 @@
-# C:\Users\Yoshi\Documents\GitHub\LINE_AI_AGENT\scripts\stop-worker.ps1
+# <PROJECT_ROOT>\scripts\stop-worker.ps1
 # LINE AI Agent Windowsワーカーを停止します。
 
 $ErrorActionPreference = "Stop"

@@ -1,4 +1,4 @@
-# C:\Users\Yoshi\Documents\GitHub\LINE_AI_AGENT\scripts\start-worker.ps1
+# <PROJECT_ROOT>\scripts\start-worker.ps1
 # LINE AI Agent Windowsワーカーをバックグラウンド起動します。
 
 param(

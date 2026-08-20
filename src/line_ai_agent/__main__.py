@@ -1,4 +1,4 @@
-r"""C:\Users\Yoshi\Documents\GitHub\LINE_AI_AGENT\src\line_ai_agent\__main__.py
+r"""<PROJECT_ROOT>\src\line_ai_agent\__main__.py
 
 LINE AI Agent Windowsワーカーのコマンドライン入口です。
 """

@@ -1,4 +1,4 @@
--- C:\Users\Yoshi\Documents\GitHub\LINE_AI_AGENT\deploy\schema.sql
+-- <PROJECT_ROOT>\deploy\schema.sql
 -- LINE Webhook、会話履歴、検索用ナレッジ、Windowsワーカージョブを保持するMariaDBスキーマです。
 
 CREATE TABLE IF NOT EXISTS line_sources (

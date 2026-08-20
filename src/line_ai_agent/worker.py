@@ -1,4 +1,4 @@
-r"""C:\Users\Yoshi\Documents\GitHub\LINE_AI_AGENT\src\line_ai_agent\worker.py
+r"""<PROJECT_ROOT>\src\line_ai_agent\worker.py
 
 VPSのDBキューからジョブを取得し、添付を保存してCodex実行結果をLINEへ返す常駐ワーカーです。
 """

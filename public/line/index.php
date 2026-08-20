@@ -1,6 +1,6 @@
 <?php
 /**
- * C:\Users\Yoshi\Documents\GitHub\LINE_AI_AGENT\public\line\index.php
+ * <PROJECT_ROOT>\public\line\index.php
  *
  * LINE Developersに設定するWebhook URLです。署名検証、会話保存、ジョブ登録、即時返信を担当します。
  */
