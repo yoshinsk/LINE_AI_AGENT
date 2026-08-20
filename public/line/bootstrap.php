@@ -10,6 +10,7 @@ declare(strict_types=1);
 const LINE_AGENT_DEFAULT_ENV_FILE = __DIR__ . '/../../private/line-ai-agent.env';
 const LINE_AGENT_MAX_LINE_TEXT_CHARS = 4500;
 const LINE_AGENT_DEFAULT_ATTACHMENT_DIR = __DIR__ . '/../../private/attachments';
+const LINE_AGENT_DEFAULT_PUBLIC_ASSET_DIR = 'assets/generated';
 const LINE_AGENT_DEFAULT_ACK_TEXT = '改めて返信します。少々お待ちください。';
 
 /**
@@ -297,11 +298,12 @@ function line_agent_chunk_text(string $text, int $maxChars): array
 }
 
 /**
- * LINE text message配列を作ります。1回のreply/push上限に合わせて最大5件へ制限します。
+ * LINE text message配列を作ります。1回のreply/push上限に合わせて最大件数へ制限します。
  */
-function line_agent_text_messages(string $text, ?string $quoteToken = null): array
+function line_agent_text_messages(string $text, ?string $quoteToken = null, int $maxMessages = 5): array
 {
-    $chunks = array_slice(line_agent_chunk_text($text, LINE_AGENT_MAX_LINE_TEXT_CHARS), 0, 5);
+    $maxMessages = max(1, min(5, $maxMessages));
+    $chunks = array_slice(line_agent_chunk_text($text, LINE_AGENT_MAX_LINE_TEXT_CHARS), 0, $maxMessages);
     if (!$chunks) {
         $chunks = ['処理結果が空でした。'];
     }
@@ -315,6 +317,109 @@ function line_agent_text_messages(string $text, ?string $quoteToken = null): arr
         $messages[] = $message;
     }
     return $messages;
+}
+
+/**
+ * 成果物付きのLINE push用message配列を作ります。
+ */
+function line_agent_messages_with_assets(string $text, ?string $quoteToken = null, array $assets = []): array
+{
+    $assets = line_agent_normalize_result_assets($assets);
+    $lineImages = [];
+    $linkAssets = [];
+    foreach ($assets as $asset) {
+        if (line_agent_can_send_image_message($asset)) {
+            $lineImages[] = $asset;
+        } else {
+            $linkAssets[] = $asset;
+        }
+    }
+
+    $imageSlots = min(count($lineImages), 3);
+    $imageAssets = array_slice($lineImages, 0, $imageSlots);
+    $linkAssets = array_merge($linkAssets, array_slice($lineImages, $imageSlots));
+    $linkText = line_agent_asset_link_text($linkAssets);
+    $reserved = count($imageAssets) + ($linkText !== '' ? 1 : 0);
+    $messages = line_agent_text_messages($text, $quoteToken, max(1, 5 - $reserved));
+
+    foreach ($imageAssets as $asset) {
+        if (count($messages) >= 5) {
+            $linkAssets[] = $asset;
+            continue;
+        }
+        $messages[] = [
+            'type' => 'image',
+            'originalContentUrl' => $asset['url'],
+            'previewImageUrl' => $asset['preview_url'] ?: $asset['url'],
+        ];
+    }
+
+    $linkText = line_agent_asset_link_text($linkAssets);
+    if ($linkText !== '' && count($messages) < 5) {
+        $messages[] = ['type' => 'text', 'text' => $linkText];
+    }
+    return array_slice($messages, 0, 5);
+}
+
+/**
+ * 成果物ペイロードをLINE送信用の安全な形へ正規化します。
+ */
+function line_agent_normalize_result_assets(array $assets): array
+{
+    $normalized = [];
+    foreach ($assets as $asset) {
+        if (!is_array($asset)) {
+            continue;
+        }
+        $url = trim((string) ($asset['url'] ?? ''));
+        if (!preg_match('/^https:\/\//i', $url)) {
+            continue;
+        }
+        $fileName = line_agent_safe_file_name((string) ($asset['file_name'] ?? ''), 'generated-file');
+        $normalized[] = [
+            'type' => (string) ($asset['type'] ?? 'file'),
+            'url' => $url,
+            'preview_url' => trim((string) ($asset['preview_url'] ?? '')),
+            'file_name' => $fileName,
+            'content_type' => (string) ($asset['content_type'] ?? 'application/octet-stream'),
+            'bytes' => isset($asset['bytes']) ? (int) $asset['bytes'] : null,
+        ];
+    }
+    return $normalized;
+}
+
+/**
+ * LINE image messageとして直接送れる成果物か判定します。
+ */
+function line_agent_can_send_image_message(array $asset): bool
+{
+    $contentType = strtolower((string) ($asset['content_type'] ?? ''));
+    if (($asset['type'] ?? '') !== 'image' || !in_array($contentType, ['image/jpeg', 'image/png'], true)) {
+        return false;
+    }
+    $previewUrl = trim((string) ($asset['preview_url'] ?? ''));
+    return $previewUrl !== '' || (isset($asset['bytes']) && (int) $asset['bytes'] <= 1024 * 1024);
+}
+
+/**
+ * LINEが直接添付表示できない成果物をURL一覧のテキストへ整形します。
+ */
+function line_agent_asset_link_text(array $assets): string
+{
+    if (!$assets) {
+        return '';
+    }
+    $lines = ['生成ファイル:'];
+    foreach (array_slice($assets, 0, 10) as $asset) {
+        $name = (string) ($asset['file_name'] ?? 'generated-file');
+        $url = (string) ($asset['url'] ?? '');
+        if ($url === '') {
+            continue;
+        }
+        $lines[] = '- ' . $name;
+        $lines[] = $url;
+    }
+    return mb_substr(implode("\n", $lines), 0, LINE_AGENT_MAX_LINE_TEXT_CHARS, 'UTF-8');
 }
 
 /**
@@ -398,11 +503,11 @@ function line_agent_reply(?string $replyToken, string $text, ?string $quoteToken
 /**
  * 処理完了後にpush messageで会話先へ結果を返します。
  */
-function line_agent_push(string $to, string $text, ?string $quoteToken = null): array
+function line_agent_push(string $to, string $text, ?string $quoteToken = null, array $assets = []): array
 {
     return line_agent_line_api_post('/v2/bot/message/push', [
         'to' => $to,
-        'messages' => line_agent_text_messages($text, $quoteToken),
+        'messages' => line_agent_messages_with_assets($text, $quoteToken, $assets),
     ]);
 }
 
@@ -419,6 +524,274 @@ function line_agent_attachment_dir(): string
         return rtrim($configured, "/\\");
     }
     return rtrim(__DIR__ . '/../../' . $configured, "/\\");
+}
+
+/**
+ * 成果物公開URLの基点を返します。未設定時は現在のinternal.php呼び出しURLから推定します。
+ */
+function line_agent_public_base_url(): string
+{
+    $configured = trim((string) line_agent_config('LINE_AI_AGENT_PUBLIC_BASE_URL', ''));
+    if ($configured !== '') {
+        return rtrim($configured, '/');
+    }
+
+    $proto = strtolower(trim(line_agent_request_header('X-Forwarded-Proto')));
+    if ($proto === '') {
+        $https = strtolower((string) ($_SERVER['HTTPS'] ?? ''));
+        $proto = ($https !== '' && $https !== 'off') ? 'https' : 'http';
+    }
+    $host = trim(line_agent_request_header('Host')) ?: trim((string) ($_SERVER['HTTP_HOST'] ?? ''));
+    if ($host === '') {
+        throw new RuntimeException('public base url could not be determined');
+    }
+    $scriptName = str_replace('\\', '/', (string) ($_SERVER['SCRIPT_NAME'] ?? '/line/internal.php'));
+    $scriptDir = rtrim(dirname($scriptName), '/');
+    return $proto . '://' . $host . ($scriptDir === '' ? '' : $scriptDir);
+}
+
+/**
+ * 公開配下の成果物保存ディレクトリを相対パスで返します。
+ */
+function line_agent_public_asset_relative_root(): string
+{
+    $configured = trim((string) line_agent_config('LINE_AI_AGENT_PUBLIC_ASSET_DIR', LINE_AGENT_DEFAULT_PUBLIC_ASSET_DIR));
+    $configured = str_replace('\\', '/', $configured === '' ? LINE_AGENT_DEFAULT_PUBLIC_ASSET_DIR : $configured);
+    $segments = [];
+    foreach (explode('/', $configured) as $segment) {
+        $segment = trim($segment);
+        if ($segment === '' || $segment === '.' || $segment === '..') {
+            continue;
+        }
+        $segments[] = preg_replace('/[^A-Za-z0-9._-]+/', '_', $segment) ?: 'asset';
+    }
+    return $segments ? implode('/', $segments) : LINE_AGENT_DEFAULT_PUBLIC_ASSET_DIR;
+}
+
+/**
+ * 公開配下の成果物保存ディレクトリを絶対パスで返します。
+ */
+function line_agent_public_asset_root_dir(): string
+{
+    return rtrim(__DIR__ . '/' . line_agent_public_asset_relative_root(), "/\\");
+}
+
+/**
+ * 公開成果物URLを生成します。
+ */
+function line_agent_public_asset_url(string $relativePath): string
+{
+    $segments = array_map('rawurlencode', array_filter(explode('/', str_replace('\\', '/', $relativePath)), fn (string $item): bool => $item !== ''));
+    return line_agent_public_base_url() . '/' . implode('/', $segments);
+}
+
+/**
+ * ワーカーから受け取った生成成果物を公開ディレクトリへ保存します。
+ */
+function line_agent_store_result_asset_from_worker(array $body): array
+{
+    $jobId = (int) ($body['job_id'] ?? 0);
+    $fileName = line_agent_safe_file_name((string) ($body['file_name'] ?? ''), 'generated-file');
+    $contentBase64 = (string) ($body['content_base64'] ?? '');
+    if ($jobId <= 0 || $contentBase64 === '') {
+        line_agent_json_response(['ok' => false, 'error' => 'result_asset_required'], 400);
+    }
+    if (!line_agent_result_asset_allowed($fileName)) {
+        line_agent_json_response(['ok' => false, 'error' => 'result_asset_extension_rejected'], 400);
+    }
+
+    $jobStmt = line_agent_db()->prepare('SELECT id FROM line_jobs WHERE id = :id');
+    $jobStmt->execute([':id' => $jobId]);
+    if (!$jobStmt->fetch()) {
+        line_agent_json_response(['ok' => false, 'error' => 'job_not_found'], 404);
+    }
+
+    $binary = base64_decode($contentBase64, true);
+    if ($binary === false) {
+        line_agent_json_response(['ok' => false, 'error' => 'invalid_result_asset_base64'], 400);
+    }
+    $bytes = strlen($binary);
+    $maxBytes = max(1, (int) line_agent_config('LINE_AI_AGENT_RESULT_ASSET_MAX_BYTES', (string) (10 * 1024 * 1024)));
+    if ($bytes > $maxBytes) {
+        line_agent_json_response(['ok' => false, 'error' => 'result_asset_too_large'], 400);
+    }
+    $sha256 = hash('sha256', $binary);
+    $providedHash = strtolower(trim((string) ($body['sha256'] ?? '')));
+    if ($providedHash !== '' && !hash_equals($providedHash, $sha256)) {
+        line_agent_json_response(['ok' => false, 'error' => 'result_asset_hash_mismatch'], 400);
+    }
+
+    $relativeRoot = line_agent_public_asset_relative_root();
+    $relativeDir = $relativeRoot . '/' . date('Ymd') . '/job-' . $jobId;
+    $targetDir = __DIR__ . '/' . $relativeDir;
+    if (!is_dir($targetDir) && !mkdir($targetDir, 0755, true) && !is_dir($targetDir)) {
+        throw new RuntimeException('result asset directory could not be created');
+    }
+    line_agent_write_asset_htaccess(line_agent_public_asset_root_dir());
+
+    $storedName = bin2hex(random_bytes(8)) . '-' . $fileName;
+    $targetPath = $targetDir . '/' . $storedName;
+    file_put_contents($targetPath, $binary, LOCK_EX);
+    @chmod($targetPath, 0644);
+
+    $contentType = line_agent_detect_result_asset_content_type($binary, (string) ($body['content_type'] ?? ''), $fileName);
+    $relativePath = $relativeDir . '/' . $storedName;
+    $asset = [
+        'type' => line_agent_result_asset_type($contentType, $fileName),
+        'url' => line_agent_public_asset_url($relativePath),
+        'preview_url' => '',
+        'file_name' => $fileName,
+        'content_type' => $contentType,
+        'bytes' => $bytes,
+        'sha256' => $sha256,
+    ];
+
+    if ($asset['type'] === 'image') {
+        $preview = line_agent_create_result_image_preview($targetPath, $targetDir, $storedName);
+        if ($preview !== null) {
+            $asset['preview_url'] = line_agent_public_asset_url($relativeDir . '/' . $preview['file_name']);
+        } elseif ($bytes <= 1024 * 1024) {
+            $asset['preview_url'] = $asset['url'];
+        } else {
+            $asset['type'] = 'file';
+        }
+    }
+
+    return ['ok' => true, 'asset' => $asset];
+}
+
+/**
+ * 成果物拡張子が公開可能かを判定します。
+ */
+function line_agent_result_asset_allowed(string $fileName): bool
+{
+    $extension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+    $blocked = array_filter(array_map('trim', explode(',', strtolower((string) line_agent_config(
+        'LINE_AI_AGENT_RESULT_ASSET_BLOCKED_EXTENSIONS',
+        'exe,bat,cmd,com,msi,ps1,sh,bash,zsh,fish,js,vbs,wsf,hta,php,py,rb,pl,jar,dll,so,dylib,html,xhtml,svg,xml,docm,xlsm,pptm,zip,rar,7z,tar,gz,bz2,xz'
+    )))));
+    if ($extension === '' || in_array($extension, $blocked, true)) {
+        return false;
+    }
+
+    $allowedRaw = trim((string) line_agent_config('LINE_AI_AGENT_RESULT_ASSET_ALLOWED_EXTENSIONS', ''));
+    $allowed = $allowedRaw === ''
+        ? ['jpg', 'jpeg', 'png', 'gif', 'webp', 'txt', 'md', 'csv', 'tsv', 'json', 'pdf', 'docx', 'xlsx', 'pptx']
+        : array_filter(array_map('trim', explode(',', strtolower($allowedRaw))));
+    return in_array($extension, $allowed, true);
+}
+
+/**
+ * 成果物のContent-Typeを拡張子と実データから決めます。
+ */
+function line_agent_detect_result_asset_content_type(string $binary, string $declared, string $fileName): string
+{
+    $extensionMap = [
+        'csv' => 'text/csv',
+        'docx' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'gif' => 'image/gif',
+        'jpeg' => 'image/jpeg',
+        'jpg' => 'image/jpeg',
+        'json' => 'application/json',
+        'md' => 'text/markdown',
+        'pdf' => 'application/pdf',
+        'png' => 'image/png',
+        'pptx' => 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        'tsv' => 'text/tab-separated-values',
+        'txt' => 'text/plain',
+        'webp' => 'image/webp',
+        'xlsx' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ];
+    $extension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+    $declared = strtolower(trim(explode(';', $declared)[0]));
+    if ($declared !== '' && preg_match('/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/', $declared)) {
+        return $declared;
+    }
+    if (function_exists('finfo_open')) {
+        $finfo = finfo_open(FILEINFO_MIME_TYPE);
+        if ($finfo !== false) {
+            $detected = finfo_buffer($finfo, $binary);
+            finfo_close($finfo);
+            if (is_string($detected) && $detected !== '' && $detected !== 'application/octet-stream') {
+                return $detected;
+            }
+        }
+    }
+    return $extensionMap[$extension] ?? 'application/octet-stream';
+}
+
+/**
+ * LINE上で画像メッセージにできる成果物種別を決めます。
+ */
+function line_agent_result_asset_type(string $contentType, string $fileName): string
+{
+    $extension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+    $contentType = strtolower($contentType);
+    return in_array($contentType, ['image/jpeg', 'image/png'], true) && in_array($extension, ['jpg', 'jpeg', 'png'], true)
+        ? 'image'
+        : 'file';
+}
+
+/**
+ * 大きい画像でもLINE preview制約を満たせるようJPEGプレビューを生成します。
+ */
+function line_agent_create_result_image_preview(string $sourcePath, string $targetDir, string $storedName): ?array
+{
+    if (!function_exists('imagecreatefromstring') || !function_exists('imagejpeg')) {
+        return null;
+    }
+    $sourceBinary = file_get_contents($sourcePath);
+    if ($sourceBinary === false) {
+        return null;
+    }
+    $source = @imagecreatefromstring($sourceBinary);
+    if ($source === false) {
+        return null;
+    }
+    $width = imagesx($source);
+    $height = imagesy($source);
+    $scale = min(1.0, 1024 / max(1, $width, $height));
+    $targetWidth = max(1, (int) round($width * $scale));
+    $targetHeight = max(1, (int) round($height * $scale));
+    $preview = imagecreatetruecolor($targetWidth, $targetHeight);
+    $white = imagecolorallocate($preview, 255, 255, 255);
+    imagefill($preview, 0, 0, $white);
+    imagecopyresampled($preview, $source, 0, 0, 0, 0, $targetWidth, $targetHeight, $width, $height);
+
+    $previewName = preg_replace('/\.[^.]+$/', '', $storedName) . '-preview.jpg';
+    $previewPath = $targetDir . '/' . $previewName;
+    foreach ([85, 75, 65, 55, 45] as $quality) {
+        ob_start();
+        imagejpeg($preview, null, $quality);
+        $jpeg = ob_get_clean();
+        if (is_string($jpeg) && strlen($jpeg) <= 1024 * 1024) {
+            file_put_contents($previewPath, $jpeg, LOCK_EX);
+            @chmod($previewPath, 0644);
+            imagedestroy($source);
+            imagedestroy($preview);
+            return ['file_name' => $previewName, 'bytes' => strlen($jpeg), 'content_type' => 'image/jpeg'];
+        }
+    }
+    imagedestroy($source);
+    imagedestroy($preview);
+    return null;
+}
+
+/**
+ * 公開成果物ディレクトリでスクリプト実行と一覧表示を抑止します。
+ */
+function line_agent_write_asset_htaccess(string $assetRoot): void
+{
+    if (!is_dir($assetRoot)) {
+        return;
+    }
+    $path = rtrim($assetRoot, "/\\") . '/.htaccess';
+    if (is_file($path)) {
+        return;
+    }
+    $body = "Options -Indexes\nRemoveHandler .php .phtml .phar .cgi .pl .py .rb .sh\n<FilesMatch \"\\.(php|phtml|phar|cgi|pl|py|rb|sh|html|xhtml|svg|xml|js)$\">\nRequire all denied\n</FilesMatch>\n";
+    file_put_contents($path, $body, LOCK_EX);
+    @chmod($path, 0644);
 }
 
 /**

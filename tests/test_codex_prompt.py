@@ -36,6 +36,9 @@ class CodexPromptTest(unittest.TestCase):
             timeout_seconds=30,
             no_project_workdir=Path("C:/tmp"),
             reply_max_chars=4500,
+            result_asset_output_dir=Path("C:/tmp/result-assets"),
+            result_asset_allowed_dirs=(Path("C:/tmp/result-assets"),),
+            result_asset_max_count=5,
         )
         image_path = Path("C:/tmp/photo.jpg")
         pdf_path = Path("C:/tmp/report.pdf")

@@ -53,6 +53,10 @@ try {
         line_agent_json_response(line_agent_complete_job($body));
     }
 
+    if ($action === 'result_asset') {
+        line_agent_json_response(line_agent_store_result_asset_from_worker($body));
+    }
+
     if ($action === 'knowledge_search') {
         $sourceKey = trim((string) ($body['source_key'] ?? ''));
         $query = trim((string) ($body['query'] ?? ''));
@@ -134,6 +138,7 @@ function line_agent_complete_job(array $body): array
     $status = (string) ($body['status'] ?? 'succeeded');
     $resultText = trim((string) ($body['result_text'] ?? ''));
     $errorText = trim((string) ($body['error_text'] ?? ''));
+    $assets = is_array($body['assets'] ?? null) ? line_agent_normalize_result_assets($body['assets']) : [];
     if ($jobId <= 0 || !in_array($status, ['succeeded', 'failed'], true)) {
         line_agent_json_response(['ok' => false, 'error' => 'invalid_job_completion'], 400);
     }
@@ -163,7 +168,7 @@ function line_agent_complete_job(array $body): array
         'job_status' => $status,
     ]);
 
-    $delivery = line_agent_push((string) $job['source_external_id'], $replyText, line_agent_job_quote_token($job));
+    $delivery = line_agent_push((string) $job['source_external_id'], $replyText, line_agent_job_quote_token($job), $assets);
     line_agent_store_delivery_attempt($jobId, (string) $job['source_key'], 'push_result', $delivery);
 
     line_agent_json_response([

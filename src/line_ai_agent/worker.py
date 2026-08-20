@@ -93,7 +93,9 @@ class LineWorker:
                 attachments=tuple(attachments),
             )
             result = self._runner.run(codex_job)
-            self._client.complete(job_id, "succeeded" if result.ok else "failed", result.text)
+            assets, upload_errors = self._upload_result_assets(job_id, result.asset_paths)
+            result_text = _append_upload_errors(result.text, upload_errors)
+            self._client.complete(job_id, "succeeded" if result.ok else "failed", result_text, assets=assets)
             return True
         except Exception as exc:
             LOGGER.exception("job #%s failed", job_id)
@@ -121,6 +123,18 @@ class LineWorker:
                     saved.append(note.resolve())
         return saved
 
+    def _upload_result_assets(self, job_id: int, paths: tuple[Path, ...]) -> tuple[list[dict], list[str]]:
+        """Codex生成成果物を公開サーバへアップロードします。"""
+        assets: list[dict] = []
+        errors: list[str] = []
+        for path in paths:
+            try:
+                assets.append(self._client.upload_result_asset(job_id, path))
+            except Exception as exc:
+                LOGGER.exception("job #%s result asset upload failed: %s", job_id, path)
+                errors.append(f"{path.name}: {exc}")
+        return assets, errors
+
 
 def build_worker(settings: Settings) -> LineWorker:
     """設定から具象サービスを組み立てます。"""
@@ -135,6 +149,9 @@ def build_worker(settings: Settings) -> LineWorker:
         settings.codex_command_timeout_seconds,
         settings.codex_no_project_workdir,
         settings.codex_reply_max_chars,
+        settings.result_asset_output_dir,
+        settings.result_asset_allowed_dirs,
+        settings.result_asset_max_count,
     )
     return LineWorker(settings, client, runner, projects)
 
@@ -143,3 +160,11 @@ def _safe_file_name(file_name: str) -> str:
     """サーバ側とは別にワーカー保存時もファイル名を安全化します。"""
     clean = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", file_name).strip(" .")
     return clean[:180] or "attachment.bin"
+
+
+def _append_upload_errors(text: str, errors: list[str]) -> str:
+    """成果物アップロードだけ失敗した場合にLINE本文へ短く追記します。"""
+    if not errors:
+        return text
+    detail = "\n".join(f"- {item}" for item in errors[:3])
+    return text.rstrip() + "\n\n生成ファイルのLINE送信に失敗しました。\n" + detail

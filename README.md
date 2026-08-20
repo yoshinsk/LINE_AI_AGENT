@@ -29,12 +29,17 @@ LINE
 - 会話履歴とAI回答をMariaDB/MySQL互換DBへ保存
 - `FULLTEXT` とLIKEフォールバックによる過去ナレッジ検索
 - 画像、動画、音声、ファイル添付の保存とCodexへのローカルパス連携
+- Codexが生成した画像・テキスト・PDF等の成果物を公開URL化してLINEへ返却
 
-## 添付ファイル
+## 添付ファイルと成果物
 
 LINEの `file` / `image` / `video` / `audio` メッセージを受けると、サーバ側がLINEのcontent取得APIでバイナリを取得し、Web公開root外の `private/attachments` などに保存します。ワーカーは内部APIの認証付きdownload endpointから添付を取得し、Codexプロンプトへ絶対パスとして渡します。
 
 画像添付はCodex CLIの `--image` にも渡します。PDFや通常ファイルはローカル保存パスをプロンプトに渡し、Codex側が必要に応じてファイルを読み取ります。
+
+Codexが処理結果としてファイルを生成する場合、ワーカーは `LINE_AGENT_RESULT_ASSET_OUTPUT_DIR` をジョブごとの成果物出力先としてCodexへ渡します。この配下、または `LINE_AGENT_RESULT_ASSET_ALLOWED_DIRS` で許可したディレクトリ配下の生成ファイルは、内部APIでサーバへアップロードされます。
+
+サーバは生成ファイルを `LINE_AI_AGENT_PUBLIC_ASSET_DIR` 配下へ保存し、HTTPS公開URLを作ってLINEへ返します。JPEG/PNGはLINEの画像メッセージとして送信します。TXT、PDF、Office文書、CSVなど、LINE Messaging APIで任意ファイルとして直接pushできない形式は、LINE本文内のダウンロードURLとして返します。
 
 既定では以下を拒否します。
 
@@ -44,6 +49,8 @@ LINEの `file` / `image` / `video` / `audio` メッセージを受けると、�
 - 設定上限を超えるファイル
 
 許可拡張子を固定したい場合はサーバ側envの `LINE_AI_AGENT_ATTACHMENT_ALLOWED_EXTENSIONS` を設定します。
+
+生成成果物の許可拡張子を固定したい場合はサーバ側envの `LINE_AI_AGENT_RESULT_ASSET_ALLOWED_EXTENSIONS` を設定します。
 
 ## サーバ配置
 
@@ -63,6 +70,12 @@ LINEの `file` / `image` / `video` / `audio` メッセージを受けると、�
 
 ```text
 /path/to/private/attachments/
+```
+
+生成成果物公開先:
+
+```text
+/path/to/webroot/line/assets/generated/
 ```
 
 DB初期化:
@@ -90,6 +103,7 @@ https://example.com/line/
 - `LINE_AI_AGENT_DB_USER`
 - `LINE_AI_AGENT_DB_PASS`
 - `LINE_AI_AGENT_WORKER_TOKEN`
+- `LINE_AI_AGENT_PUBLIC_BASE_URL`
 
 受付返信:
 
@@ -112,6 +126,7 @@ notepad .env
 - `CODEX_COMMAND`
 - `CODEX_PROJECTS_JSON`
 - `CODEX_ALLOWED_PROJECT_ROOTS`
+- `LINE_AGENT_RESULT_ASSET_OUTPUT_DIR`
 
 実行:
 
@@ -153,6 +168,8 @@ curl -sS https://example.com/line/
 - 重い処理は非同期化します。
 - 添付バイナリはWebhookで受け取るmessage IDから `GET /v2/bot/message/{messageId}/content` で取得します。
 - 返信はreply message、処理完了後はpush messageを使います。
+- 1回のreply/pushで送れるmessage objectは最大5件です。
+- 画像メッセージで直接送れる画像URLはHTTPSのJPEG/PNGです。任意ファイル形式のpush送信用message typeは前提にしません。
 
 参照:
 

@@ -6,7 +6,10 @@ r"""<PROJECT_ROOT>\src\line_ai_agent\api_client.py
 from __future__ import annotations
 
 from pathlib import Path
+import base64
+import hashlib
 import json
+import mimetypes
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -37,7 +40,14 @@ class ApiClient:
         """処理待ちジョブを1件取得します。"""
         return self._post("claim", {"worker_id": self._worker_id, "lease_seconds": lease_seconds})
 
-    def complete(self, job_id: int, status: str, result_text: str, error_text: str = "") -> dict:
+    def complete(
+        self,
+        job_id: int,
+        status: str,
+        result_text: str,
+        error_text: str = "",
+        assets: list[dict] | None = None,
+    ) -> dict:
         """ジョブ結果を公開サーバへ返し、LINE push送信まで進めます。"""
         return self._post(
             "complete",
@@ -47,8 +57,30 @@ class ApiClient:
                 "status": status,
                 "result_text": result_text,
                 "error_text": error_text,
+                "assets": assets or [],
             },
         )
+
+    def upload_result_asset(self, job_id: int, path: Path) -> dict:
+        """Codexが生成した成果物ファイルを公開サーバへアップロードします。"""
+        binary = path.read_bytes()
+        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        response = self._post(
+            "result_asset",
+            {
+                "worker_id": self._worker_id,
+                "job_id": job_id,
+                "file_name": path.name,
+                "content_type": content_type,
+                "sha256": hashlib.sha256(binary).hexdigest(),
+                "content_base64": base64.b64encode(binary).decode("ascii"),
+            },
+            timeout=180,
+        )
+        asset = response.get("asset")
+        if not isinstance(asset, dict):
+            raise RuntimeError("internal API returned invalid asset payload")
+        return asset
 
     def download_attachment(self, attachment_id: int, destination: Path) -> Path:
         """添付ファイルを認証付き内部APIから保存します。"""
@@ -63,7 +95,7 @@ class ApiClient:
             destination.write_bytes(response.read())
         return destination
 
-    def _post(self, action: str, payload: dict) -> dict:
+    def _post(self, action: str, payload: dict, timeout: int = 60) -> dict:
         """JSON POSTを送信し、JSONレスポンスを辞書として返します。"""
         body = json.dumps({"action": action, **payload}, ensure_ascii=False).encode("utf-8")
         request = Request(
@@ -76,7 +108,7 @@ class ApiClient:
             method="POST",
         )
         try:
-            with urlopen(request, timeout=60) as response:
+            with urlopen(request, timeout=timeout) as response:
                 raw = response.read().decode("utf-8", errors="replace")
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")

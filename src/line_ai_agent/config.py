@@ -11,6 +11,8 @@ import os
 import tempfile
 from typing import Mapping
 
+from .result_assets import default_result_asset_allowed_dirs
+
 
 DEFAULT_ENV_FILE = Path(".env")
 
@@ -68,6 +70,9 @@ class Settings:
     poll_interval_seconds: int
     worker_concurrency: int
     attachment_download_dir: Path
+    result_asset_output_dir: Path
+    result_asset_allowed_dirs: tuple[Path, ...]
+    result_asset_max_count: int
     codex_command: str
     codex_command_timeout_seconds: int
     codex_reply_max_chars: int
@@ -90,6 +95,20 @@ class Settings:
         ).expanduser()
         if not download_dir.is_absolute():
             download_dir = config_base / download_dir
+        result_asset_output_dir = Path(
+            values.get(
+                "LINE_AGENT_RESULT_ASSET_OUTPUT_DIR",
+                str(Path(".state") / "result-assets"),
+            )
+        ).expanduser()
+        if not result_asset_output_dir.is_absolute():
+            result_asset_output_dir = config_base / result_asset_output_dir
+        configured_result_asset_roots = _paths(values, "LINE_AGENT_RESULT_ASSET_ALLOWED_DIRS")
+        result_asset_allowed_dirs = (
+            configured_result_asset_roots
+            if configured_result_asset_roots
+            else default_result_asset_allowed_dirs(config_base)
+        )
         no_project_raw = values.get("CODEX_NO_PROJECT_WORKDIR", "").strip()
         no_project_workdir = (
             Path(no_project_raw).expanduser()
@@ -104,6 +123,9 @@ class Settings:
             poll_interval_seconds=max(1, int(values.get("LINE_AGENT_POLL_INTERVAL_SECONDS", "5"))),
             worker_concurrency=max(1, int(values.get("LINE_AGENT_WORKER_CONCURRENCY", "1"))),
             attachment_download_dir=download_dir.resolve(),
+            result_asset_output_dir=result_asset_output_dir.resolve(),
+            result_asset_allowed_dirs=tuple(path.resolve(strict=False) for path in result_asset_allowed_dirs),
+            result_asset_max_count=max(1, min(10, int(values.get("LINE_AGENT_RESULT_ASSET_MAX_COUNT", "5")))),
             codex_command=values.get("CODEX_COMMAND", "").strip(),
             codex_command_timeout_seconds=max(1, int(values.get("CODEX_COMMAND_TIMEOUT_SECONDS", "1800"))),
             codex_reply_max_chars=max(1000, int(values.get("CODEX_REPLY_MAX_CHARS", "8000"))),

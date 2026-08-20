@@ -15,6 +15,7 @@ import tempfile
 from typing import Any
 
 from .projects import ProjectSelection
+from .result_assets import collect_result_asset_paths, sanitize_result_text
 
 
 COMMAND_FAILURE_REPLY = "内部処理を完了できませんでした。詳細はワーカーのログに記録しました。"
@@ -34,6 +35,7 @@ class CodexJob:
     recent_messages: tuple[dict[str, Any], ...]
     knowledge: tuple[dict[str, Any], ...]
     attachments: tuple[Path, ...]
+    result_asset_dir: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,7 @@ class CodexResult:
 
     text: str
     ok: bool
+    asset_paths: tuple[Path, ...] = ()
 
 
 class CodexRunner:
@@ -53,16 +56,23 @@ class CodexRunner:
         timeout_seconds: int,
         no_project_workdir: Path,
         reply_max_chars: int,
+        result_asset_output_dir: Path,
+        result_asset_allowed_dirs: tuple[Path, ...],
+        result_asset_max_count: int,
     ) -> None:
         self._command = command
         self._timeout_seconds = timeout_seconds
         self._no_project_workdir = no_project_workdir
         self._reply_max_chars = reply_max_chars
+        self._result_asset_output_dir = result_asset_output_dir
+        self._result_asset_allowed_dirs = result_asset_allowed_dirs
+        self._result_asset_max_count = result_asset_max_count
 
     def run(self, job: CodexJob) -> CodexResult:
         """設定に応じてdry-runまたはCodex CLIを実行します。"""
+        job = self._with_result_asset_dir(job)
         if not self._command:
-            return CodexResult(build_dry_run_reply(job), True)
+            return CodexResult(build_dry_run_reply(job), True, ())
 
         workdir = job.project.project_path or self._no_project_workdir
         workdir.mkdir(parents=True, exist_ok=True)
@@ -78,6 +88,8 @@ class CodexRunner:
         )
         if job.project.project_path:
             env["LINE_AI_AGENT_PROJECT_PATH"] = str(job.project.project_path)
+        if job.result_asset_dir:
+            env["LINE_AI_AGENT_RESULT_ASSET_DIR"] = str(job.result_asset_dir)
 
         try:
             completed = subprocess.run(
@@ -105,8 +117,30 @@ class CodexRunner:
             detail = stderr or stdout or f"exit code {completed.returncode}"
             return CodexResult(_clip(COMMAND_FAILURE_REPLY + "\n" + _clip(detail, 1000), self._reply_max_chars), False)
 
-        text = file_output or stdout or AI_AGENT_EMPTY_REPLY
-        return CodexResult(_clip(text.strip(), self._reply_max_chars), True)
+        raw_text = (file_output or stdout or AI_AGENT_EMPTY_REPLY).strip()
+        asset_paths = collect_result_asset_paths(
+            raw_text,
+            job.result_asset_dir or self._result_asset_output_dir / f"job-{job.job_id}",
+            self._result_asset_allowed_dirs,
+            self._result_asset_max_count,
+        )
+        text = sanitize_result_text(raw_text, asset_paths)
+        return CodexResult(_clip(text, self._reply_max_chars), True, asset_paths)
+
+    def _with_result_asset_dir(self, job: CodexJob) -> CodexJob:
+        """ジョブごとの成果物出力ディレクトリを確定し、Codexへ渡せる状態にします。"""
+        result_asset_dir = job.result_asset_dir or self._result_asset_output_dir / f"job-{job.job_id}"
+        result_asset_dir.mkdir(parents=True, exist_ok=True)
+        return CodexJob(
+            job_id=job.job_id,
+            source_key=job.source_key,
+            request_text=job.request_text,
+            project=job.project,
+            recent_messages=job.recent_messages,
+            knowledge=job.knowledge,
+            attachments=job.attachments,
+            result_asset_dir=result_asset_dir,
+        )
 
     def _prepare_command(self, job: CodexJob) -> tuple[tuple[str, ...], Path | None]:
         """コマンド文字列を分割し、出力先と画像添付引数をジョブ別に組み立てます。"""
@@ -140,6 +174,16 @@ def build_prompt(job: CodexJob) -> str:
         f"プロジェクト: {job.project.label}",
         "",
     ]
+    if job.result_asset_dir:
+        lines.extend(
+            [
+                "LINE送信用の成果物出力先:",
+                str(job.result_asset_dir),
+                "画像、テキスト、PDF、Office文書などをファイルとして返す場合は、上記ディレクトリへ保存してください。",
+                "回答には生成ファイル名を短く書き、ローカル保存先だけで完了扱いにしないでください。",
+                "",
+            ]
+        )
     if job.recent_messages:
         lines.extend(["直近の会話履歴:"])
         for item in job.recent_messages:
