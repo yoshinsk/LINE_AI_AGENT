@@ -41,6 +41,34 @@ Codexが処理結果としてファイルを生成する場合、ワーカーは
 
 サーバは生成ファイルを `LINE_AI_AGENT_PUBLIC_ASSET_DIR` 配下へ保存し、HTTPS公開URLを作ってLINEへ返します。JPEG/PNGはLINEの画像メッセージとして送信します。TXT、PDF、Office文書、CSVなど、LINE Messaging APIで任意ファイルとして直接pushできない形式は、LINE本文内のダウンロードURLとして返します。
 
+### 画像・ファイル送信の挙動
+
+AIが生成したファイルは、ローカルパスをLINEへ表示して終わるのではなく、以下の流れでLINEへ返します。
+
+1. ワーカーがCodexへ `LINE_AI_AGENT_RESULT_ASSET_DIR` を環境変数として渡します。
+2. Codexがそのディレクトリへ成果物を保存します。
+3. ワーカーが成果物を `internal.php` の `result_asset` actionへアップロードします。
+4. サーバが `assets/generated/YYYYMMDD/job-{job_id}/` 配下へ保存し、HTTPS URLを発行します。
+5. `complete` actionがAI回答本文と成果物を同じLINE pushにまとめて送信します。
+
+画像の送信:
+
+- JPEG/PNGはLINEの画像メッセージとして送信します。
+- 1MBを超える画像は、サーバ側でプレビュー画像の生成を試みます。
+- GIF/WebPなど、LINE画像メッセージとして直接扱わない形式はダウンロードURLとして返します。
+
+画像以外のファイル送信:
+
+- TXT、Markdown、CSV、TSV、JSON、PDF、DOCX、XLSX、PPTXは既定で成果物として返せます。
+- LINE Messaging APIのpushでは任意ファイルを直接添付するmessage typeを前提にしないため、画像以外はHTTPSダウンロードURLとしてLINE本文へ記載します。
+- 1回のreply/pushで送れるmessage objectは最大5件です。本文、画像、ファイルリンクが多い場合は、上限内に収まる範囲で送信します。
+
+セキュリティ上の注意:
+
+- 生成成果物のURLはLINEから取得できる公開URLです。機密情報や個人情報を成果物として返す運用は避けてください。
+- 実行ファイル、スクリプト、HTML/SVG/XML、アーカイブ、マクロ付きOfficeなどは既定で拒否します。
+- 成果物の最大サイズは `LINE_AI_AGENT_RESULT_ASSET_MAX_BYTES` で制限します。
+
 既定では以下を拒否します。
 
 - 実行ファイル、スクリプト、DLL/JAR
@@ -105,6 +133,14 @@ https://example.com/line/
 - `LINE_AI_AGENT_WORKER_TOKEN`
 - `LINE_AI_AGENT_PUBLIC_BASE_URL`
 
+成果物送信:
+
+- `LINE_AI_AGENT_PUBLIC_BASE_URL`: LINEからアクセスできる公開URLの基点
+- `LINE_AI_AGENT_PUBLIC_ASSET_DIR`: 生成成果物を保存する公開ディレクトリ
+- `LINE_AI_AGENT_RESULT_ASSET_MAX_BYTES`: 1ファイルあたりの最大サイズ
+- `LINE_AI_AGENT_RESULT_ASSET_ALLOWED_EXTENSIONS`: 許可する生成成果物の拡張子
+- `LINE_AI_AGENT_RESULT_ASSET_BLOCKED_EXTENSIONS`: 拒否する生成成果物の拡張子
+
 受付返信:
 
 - 通常の短文依頼では、Webhook受信時の受付返信は送らず、処理完了後のAI回答だけをpushします。
@@ -127,6 +163,11 @@ notepad .env
 - `CODEX_PROJECTS_JSON`
 - `CODEX_ALLOWED_PROJECT_ROOTS`
 - `LINE_AGENT_RESULT_ASSET_OUTPUT_DIR`
+
+成果物送信用の任意設定:
+
+- `LINE_AGENT_RESULT_ASSET_ALLOWED_DIRS`: 回答文中のローカルパスから回収してよいディレクトリ。未設定時は `.state/result-assets` とユーザーのCodex生成画像ディレクトリを対象にします。
+- `LINE_AGENT_RESULT_ASSET_MAX_COUNT`: 1ジョブでアップロードする成果物数の上限
 
 実行:
 
@@ -176,3 +217,7 @@ curl -sS https://example.com/line/
 - https://developers.line.biz/en/docs/messaging-api/receiving-messages/
 - https://developers.line.biz/en/docs/messaging-api/verify-webhook-signature/
 - https://developers.line.biz/en/reference/messaging-api/
+
+## ライセンス
+
+MIT Licenseです。商用・非商用を問わず、利用、複製、改変、配布、販売、サブライセンスが可能です。詳細は [LICENSE](LICENSE) を確認してください。
