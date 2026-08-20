@@ -121,6 +121,23 @@ function line_agent_json_response(array $payload, int $status = 200): never
 }
 
 /**
+ * HTTPヘッダ名を大文字小文字非依存で取得します。Webサーバ差異をここで吸収します。
+ */
+function line_agent_request_header(string $name): string
+{
+    $target = strtolower($name);
+    $headers = function_exists('getallheaders') ? getallheaders() : [];
+    foreach ($headers ?: [] as $headerName => $headerValue) {
+        if (strtolower((string) $headerName) === $target) {
+            return is_array($headerValue) ? implode(',', $headerValue) : (string) $headerValue;
+        }
+    }
+
+    $serverKey = 'HTTP_' . strtoupper(str_replace('-', '_', $name));
+    return isset($_SERVER[$serverKey]) ? (string) $_SERVER[$serverKey] : '';
+}
+
+/**
  * Webhook署名をLINE公式仕様に従ってraw bodyから検証します。
  */
 function line_agent_verify_signature(string $rawBody, string $signature): bool
@@ -860,9 +877,8 @@ function line_agent_store_delivery_attempt(?int $jobId, string $sourceKey, strin
 function line_agent_require_worker_auth(): void
 {
     $expected = line_agent_required_config('LINE_AI_AGENT_WORKER_TOKEN');
-    $headers = function_exists('getallheaders') ? getallheaders() : [];
-    $provided = $headers['X-Line-AI-Agent-Worker-Token'] ?? $headers['x-line-ai-agent-worker-token'] ?? '';
-    $auth = $headers['Authorization'] ?? $headers['authorization'] ?? '';
+    $provided = line_agent_request_header('X-Line-AI-Agent-Worker-Token');
+    $auth = line_agent_request_header('Authorization');
     if ($provided === '' && str_starts_with($auth, 'Bearer ')) {
         $provided = substr($auth, 7);
     }

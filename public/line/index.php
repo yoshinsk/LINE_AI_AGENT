@@ -23,7 +23,7 @@ try {
     }
 
     $rawBody = file_get_contents('php://input') ?: '';
-    $signature = $_SERVER['HTTP_X_LINE_SIGNATURE'] ?? '';
+    $signature = line_agent_request_header('x-line-signature');
     if (!line_agent_verify_signature($rawBody, (string) $signature)) {
         line_agent_json_response(['ok' => false, 'error' => 'invalid_signature'], 403);
     }
