@@ -108,11 +108,11 @@ try {
             'line_message_type' => 'text',
         ]);
 
-        if (!line_agent_is_addressed($sourceInfo, $text)) {
+        if (!line_agent_is_addressed($sourceInfo, $text, $message)) {
             continue;
         }
 
-        $requestText = line_agent_strip_agent_prefix($text);
+        $requestText = line_agent_strip_agent_prefix(line_agent_strip_self_mention_prefix($text, $message));
         if (line_agent_is_status_request($requestText)) {
             $reply = line_agent_reply($event['replyToken'] ?? null, line_agent_format_runtime_status($sourceInfo['source_key']));
             line_agent_store_delivery_attempt(null, $sourceInfo['source_key'], 'reply_status', $reply);

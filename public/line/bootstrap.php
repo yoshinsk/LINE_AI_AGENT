@@ -709,9 +709,12 @@ function line_agent_extract_project_ref(string $text): array
 /**
  * LINEの会話先種別ごとに、AIが反応すべき明示呼び出しかを判定します。
  */
-function line_agent_is_addressed(array $sourceInfo, string $text): bool
+function line_agent_is_addressed(array $sourceInfo, string $text, array $message = []): bool
 {
     if ($sourceInfo['source_type'] === 'user') {
+        return true;
+    }
+    if (line_agent_has_self_mention($message)) {
         return true;
     }
     $trimmed = trim($text);
@@ -722,6 +725,61 @@ function line_agent_is_addressed(array $sourceInfo, string $text): bool
         return true;
     }
     return str_contains($trimmed, 'プロジェクト一覧') || str_contains(strtolower($trimmed), 'project list');
+}
+
+/**
+ * LINEのmentionメタデータから、このbot自身がメンションされたかを判定します。
+ */
+function line_agent_has_self_mention(array $message): bool
+{
+    $mentionees = $message['mention']['mentionees'] ?? [];
+    if (!is_array($mentionees)) {
+        return false;
+    }
+    foreach ($mentionees as $mentionee) {
+        if (!is_array($mentionee)) {
+            continue;
+        }
+        $isSelf = $mentionee['isSelf'] ?? false;
+        if ($isSelf === true || $isSelf === 1 || $isSelf === '1' || $isSelf === 'true') {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * AIへ渡す本文から、このbot自身へのメンション表記だけを取り除きます。
+ */
+function line_agent_strip_self_mention_prefix(string $text, array $message): string
+{
+    $mentionees = $message['mention']['mentionees'] ?? [];
+    if (!is_array($mentionees)) {
+        return trim($text);
+    }
+
+    $ranges = [];
+    foreach ($mentionees as $mentionee) {
+        if (!is_array($mentionee)) {
+            continue;
+        }
+        $isSelf = $mentionee['isSelf'] ?? false;
+        if (!($isSelf === true || $isSelf === 1 || $isSelf === '1' || $isSelf === 'true')) {
+            continue;
+        }
+        $index = (int) ($mentionee['index'] ?? -1);
+        $length = (int) ($mentionee['length'] ?? 0);
+        if ($index >= 0 && $length > 0) {
+            $ranges[] = ['index' => $index, 'length' => $length];
+        }
+    }
+
+    usort($ranges, fn (array $a, array $b): int => $b['index'] <=> $a['index']);
+    foreach ($ranges as $range) {
+        $text = mb_substr($text, 0, $range['index'], 'UTF-8')
+            . mb_substr($text, $range['index'] + $range['length'], null, 'UTF-8');
+    }
+    return trim($text);
 }
 
 /**
