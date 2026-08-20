@@ -299,13 +299,22 @@ function line_agent_chunk_text(string $text, int $maxChars): array
 /**
  * LINE text message配列を作ります。1回のreply/push上限に合わせて最大5件へ制限します。
  */
-function line_agent_text_messages(string $text): array
+function line_agent_text_messages(string $text, ?string $quoteToken = null): array
 {
     $chunks = array_slice(line_agent_chunk_text($text, LINE_AGENT_MAX_LINE_TEXT_CHARS), 0, 5);
     if (!$chunks) {
         $chunks = ['処理結果が空でした。'];
     }
-    return array_map(fn (string $chunk): array => ['type' => 'text', 'text' => $chunk], $chunks);
+    $quoteToken = trim((string) $quoteToken);
+    $messages = [];
+    foreach ($chunks as $index => $chunk) {
+        $message = ['type' => 'text', 'text' => $chunk];
+        if ($index === 0 && $quoteToken !== '') {
+            $message['quoteToken'] = $quoteToken;
+        }
+        $messages[] = $message;
+    }
+    return $messages;
 }
 
 /**
@@ -375,25 +384,25 @@ function line_agent_line_api_get_content(string $messageId): array
 /**
  * replyTokenで即時返信します。replyTokenが無いイベントでは何もしません。
  */
-function line_agent_reply(?string $replyToken, string $text): ?array
+function line_agent_reply(?string $replyToken, string $text, ?string $quoteToken = null): ?array
 {
     if (!$replyToken) {
         return null;
     }
     return line_agent_line_api_post('/v2/bot/message/reply', [
         'replyToken' => $replyToken,
-        'messages' => line_agent_text_messages($text),
+        'messages' => line_agent_text_messages($text, $quoteToken),
     ]);
 }
 
 /**
  * 処理完了後にpush messageで会話先へ結果を返します。
  */
-function line_agent_push(string $to, string $text): array
+function line_agent_push(string $to, string $text, ?string $quoteToken = null): array
 {
     return line_agent_line_api_post('/v2/bot/message/push', [
         'to' => $to,
-        'messages' => line_agent_text_messages($text),
+        'messages' => line_agent_text_messages($text, $quoteToken),
     ]);
 }
 
@@ -717,6 +726,9 @@ function line_agent_is_addressed(array $sourceInfo, string $text, array $message
     if (line_agent_has_self_mention($message)) {
         return true;
     }
+    if (line_agent_quotes_agent_message($message)) {
+        return true;
+    }
     $trimmed = trim($text);
     if (preg_match('/^(@?AI|@?ai|ＡＩ|ａｉ)\s*[:：　 ]/u', $trimmed)) {
         return true;
@@ -746,6 +758,109 @@ function line_agent_has_self_mention(array $message): bool
         }
     }
     return false;
+}
+
+/**
+ * 受信メッセージが過去のbot送信メッセージへ返信しているかを判定します。
+ */
+function line_agent_quotes_agent_message(array $message): bool
+{
+    $quotedMessageId = line_agent_quoted_message_id($message);
+    return $quotedMessageId !== null && line_agent_find_delivery_by_sent_message_id($quotedMessageId) !== null;
+}
+
+/**
+ * LINE返信の引用元メッセージIDを取り出します。
+ */
+function line_agent_quoted_message_id(array $message): ?string
+{
+    $quotedMessageId = trim((string) ($message['quotedMessageId'] ?? ''));
+    return $quotedMessageId === '' ? null : $quotedMessageId;
+}
+
+/**
+ * LINE APIの配信結果から、指定IDがこのbotの送信済みメッセージかを探します。
+ */
+function line_agent_find_delivery_by_sent_message_id(string $lineMessageId): ?array
+{
+    $lineMessageId = trim($lineMessageId);
+    if ($lineMessageId === '') {
+        return null;
+    }
+
+    $stmt = line_agent_db()->prepare(
+        'SELECT d.*, j.request_text, j.result_text
+           FROM line_delivery_attempts d
+           LEFT JOIN line_jobs j ON j.id = d.job_id
+          WHERE d.response_body LIKE :needle
+          ORDER BY d.id DESC
+          LIMIT 100'
+    );
+    $stmt->execute([':needle' => '%' . $lineMessageId . '%']);
+    foreach ($stmt->fetchAll() as $row) {
+        $body = json_decode((string) ($row['response_body'] ?? ''), true);
+        if (!is_array($body)) {
+            continue;
+        }
+        foreach (($body['sentMessages'] ?? []) as $sentMessage) {
+            if (is_array($sentMessage) && (string) ($sentMessage['id'] ?? '') === $lineMessageId) {
+                return $row;
+            }
+        }
+    }
+    return null;
+}
+
+/**
+ * 返信先になったAI回答を、Codexへ渡す補助文脈として取得します。
+ */
+function line_agent_quoted_agent_message_context(array $message): ?string
+{
+    $quotedMessageId = line_agent_quoted_message_id($message);
+    if ($quotedMessageId === null) {
+        return null;
+    }
+
+    $delivery = line_agent_find_delivery_by_sent_message_id($quotedMessageId);
+    if ($delivery === null) {
+        return null;
+    }
+
+    $resultText = trim((string) ($delivery['result_text'] ?? ''));
+    if ($resultText !== '') {
+        return "返信先のAI回答:\n" . mb_substr($resultText, 0, 1800, 'UTF-8');
+    }
+
+    $requestText = trim((string) ($delivery['request_text'] ?? ''));
+    if ($requestText !== '') {
+        return "返信先の依頼:\n" . mb_substr($requestText, 0, 1200, 'UTF-8');
+    }
+    return null;
+}
+
+/**
+ * ジョブ元イベントから、AI回答で引用する受信メッセージのquoteTokenを取得します。
+ */
+function line_agent_job_quote_token(array $job): ?string
+{
+    $eventId = (int) ($job['event_id'] ?? 0);
+    if ($eventId <= 0) {
+        return null;
+    }
+
+    $stmt = line_agent_db()->prepare('SELECT raw_json FROM line_webhook_events WHERE id = :id');
+    $stmt->execute([':id' => $eventId]);
+    $row = $stmt->fetch();
+    if (!$row) {
+        return null;
+    }
+
+    $event = json_decode((string) ($row['raw_json'] ?? ''), true);
+    if (!is_array($event)) {
+        return null;
+    }
+    $quoteToken = trim((string) ($event['message']['quoteToken'] ?? ''));
+    return $quoteToken === '' ? null : $quoteToken;
 }
 
 /**

@@ -21,7 +21,7 @@ VPS側はPlesk公開ディレクトリに置けるPHPだけで動かします。
 
 - LINE Webhookの署名検証
 - 1対1トークの通常会話
-- グループ・ルームではbot自身へのLINEメンション、`AI:` / `@AI` / `プロジェクト:` など明示呼び出しのみ処理
+- グループ・ルームではbot自身へのLINEメンション、bot発言へのLINE返信、`AI:` / `@AI` / `プロジェクト:` など明示呼び出しのみ処理
 - `プロジェクト: alias` / `project: alias` による作業ディレクトリ指定
 - `プロジェクト一覧` のローカル応答
 - `現状報告` による同一トーク内の未完了ジョブ確認
@@ -92,6 +92,7 @@ https://example.com/line/
 受付返信:
 
 - 通常の短文依頼では、Webhook受信時の受付返信は送らず、処理完了後のAI回答だけをpushします。
+- AI回答は、LINEの `quoteToken` が取得できる場合、ユーザーの依頼メッセージへの返信としてpushします。
 - 添付、プロジェクト指定、複数行、長文、または `LINE_AI_AGENT_ACK_KEYWORDS` に一致する依頼では `LINE_AI_AGENT_ACK_TEXT` をreplyします。
 - 添付単体の依頼では `LINE_AI_AGENT_ATTACHMENT_ACK_TEXT` をreplyします。
 

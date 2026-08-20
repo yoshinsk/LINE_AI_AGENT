@@ -163,7 +163,7 @@ function line_agent_complete_job(array $body): array
         'job_status' => $status,
     ]);
 
-    $delivery = line_agent_push((string) $job['source_external_id'], $replyText);
+    $delivery = line_agent_push((string) $job['source_external_id'], $replyText, line_agent_job_quote_token($job));
     line_agent_store_delivery_attempt($jobId, (string) $job['source_key'], 'push_result', $delivery);
 
     line_agent_json_response([

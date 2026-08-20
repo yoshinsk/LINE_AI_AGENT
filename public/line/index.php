@@ -124,9 +124,14 @@ try {
         if ($requestText === '') {
             $requestText = $text;
         }
+        $ackRequestText = $requestText;
+        $quotedContext = line_agent_quoted_agent_message_context($message);
+        if ($quotedContext !== null) {
+            $requestText = $quotedContext . "\n\n返信内容:\n" . $requestText;
+        }
         $jobId = line_agent_enqueue_job($storedEvent['id'], $sourceInfo, $requestText, $projectRef);
         $linkedAttachments = line_agent_link_recent_attachments_to_job($sourceInfo['source_key'], $jobId);
-        if (line_agent_should_send_ack($requestText, $projectRef, count($linkedAttachments))) {
+        if (line_agent_should_send_ack($ackRequestText, $projectRef, count($linkedAttachments))) {
             $reply = line_agent_reply($event['replyToken'] ?? null, line_agent_ack_text('LINE_AI_AGENT_ACK_TEXT', $jobId));
             line_agent_store_delivery_attempt($jobId, $sourceInfo['source_key'], 'reply_ack', $reply);
         }
