@@ -1,0 +1,8 @@
+r"""C:\Users\Yoshi\Documents\GitHub\LINE_AI_AGENT\src\line_ai_agent\__init__.py
+
+LINE AI AgentのWindowsワーカー用Pythonパッケージです。
+"""
+
+__all__ = ["__version__"]
+
+__version__ = "0.1.0"
