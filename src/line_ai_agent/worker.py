@@ -109,7 +109,7 @@ class LineWorker:
             destination_dir = self._settings.attachment_download_dir / f"job-{job_id}"
             if item.get("storage_status") == "stored":
                 destination = destination_dir / f"{attachment_id}-{file_name}"
-                saved.append(self._client.download_attachment(attachment_id, destination))
+                saved.append(self._client.download_attachment(attachment_id, destination).resolve())
                 continue
             if item.get("storage_status") == "external":
                 provider = (item.get("metadata") or {}).get("contentProvider") or {}
@@ -118,7 +118,7 @@ class LineWorker:
                     destination_dir.mkdir(parents=True, exist_ok=True)
                     note = destination_dir / f"{attachment_id}-{file_name}.url.txt"
                     note.write_text(str(external_url), encoding="utf-8")
-                    saved.append(note)
+                    saved.append(note.resolve())
         return saved
 
 

@@ -81,12 +81,15 @@ class Settings:
         """任意の.envと環境変数から設定を作成します。"""
         values = merged_env(env_file)
         projects_file_raw = values.get("CODEX_PROJECTS_FILE", "").strip()
+        config_base = env_file.resolve().parent if env_file is not None and env_file.exists() else Path.cwd()
         download_dir = Path(
             values.get(
                 "LINE_AGENT_ATTACHMENT_DOWNLOAD_DIR",
                 str(Path(".state") / "attachments"),
             )
-        )
+        ).expanduser()
+        if not download_dir.is_absolute():
+            download_dir = config_base / download_dir
         no_project_raw = values.get("CODEX_NO_PROJECT_WORKDIR", "").strip()
         no_project_workdir = (
             Path(no_project_raw).expanduser()
@@ -100,7 +103,7 @@ class Settings:
             or "windows-worker",
             poll_interval_seconds=max(1, int(values.get("LINE_AGENT_POLL_INTERVAL_SECONDS", "5"))),
             worker_concurrency=max(1, int(values.get("LINE_AGENT_WORKER_CONCURRENCY", "1"))),
-            attachment_download_dir=download_dir,
+            attachment_download_dir=download_dir.resolve(),
             codex_command=values.get("CODEX_COMMAND", "").strip(),
             codex_command_timeout_seconds=max(1, int(values.get("CODEX_COMMAND_TIMEOUT_SECONDS", "1800"))),
             codex_reply_max_chars=max(1000, int(values.get("CODEX_REPLY_MAX_CHARS", "8000"))),

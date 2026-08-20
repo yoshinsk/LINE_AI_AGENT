@@ -20,6 +20,7 @@ from .projects import ProjectSelection
 COMMAND_FAILURE_REPLY = "内部処理を完了できませんでした。詳細はWindowsワーカーのログに記録しました。"
 AI_AGENT_TIMEOUT_REPLY = "AIエージェントの実行がタイムアウトしました。"
 AI_AGENT_EMPTY_REPLY = "AIエージェントの実行結果が空でした。"
+CODEX_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
 
 @dataclass(frozen=True)
@@ -66,7 +67,7 @@ class CodexRunner:
         workdir = job.project.project_path or self._no_project_workdir
         workdir.mkdir(parents=True, exist_ok=True)
         prompt = build_prompt(job)
-        args, output_file = self._prepare_command(job.job_id)
+        args, output_file = self._prepare_command(job)
         env = os.environ.copy()
         env.update(
             {
@@ -107,18 +108,23 @@ class CodexRunner:
         text = file_output or stdout or AI_AGENT_EMPTY_REPLY
         return CodexResult(_clip(text.strip(), self._reply_max_chars), True)
 
-    def _prepare_command(self, job_id: int) -> tuple[tuple[str, ...], Path | None]:
-        """コマンド文字列を分割し、{output_file}をジョブ別パスへ置換します。"""
+    def _prepare_command(self, job: CodexJob) -> tuple[tuple[str, ...], Path | None]:
+        """コマンド文字列を分割し、出力先と画像添付引数をジョブ別に組み立てます。"""
         parts = _resolve_stale_codex_parts(_split_command(self._command))
         if not parts:
             raise ValueError("CODEX_COMMAND is empty")
-        if not any("{output_file}" in part for part in parts):
-            return tuple(parts), None
-        output_dir = Path(tempfile.gettempdir()) / "line-ai-agent"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_file = output_dir / f"last-message-{job_id}.txt"
-        output_file.unlink(missing_ok=True)
-        return tuple(part.replace("{output_file}", str(output_file)) for part in parts), output_file
+        output_file = None
+        if any("{output_file}" in part for part in parts):
+            output_dir = Path(tempfile.gettempdir()) / "line-ai-agent"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_file = output_dir / f"last-message-{job.job_id}.txt"
+            output_file.unlink(missing_ok=True)
+            parts = [part.replace("{output_file}", str(output_file)) for part in parts]
+
+        image_args = _codex_image_args(job.attachments)
+        if image_args:
+            parts = _insert_codex_image_args(parts, image_args)
+        return tuple(parts), output_file
 
 
 def build_prompt(job: CodexJob) -> str:
@@ -148,6 +154,8 @@ def build_prompt(job: CodexJob) -> str:
         lines.extend(["添付ファイル:"])
         for path in job.attachments:
             lines.append(f"- {path}")
+        if any(_is_codex_image(path) for path in job.attachments):
+            lines.append("画像添付はCodex CLIの--imageにも渡されています。")
         lines.append("")
     lines.extend(["依頼内容:", job.request_text.strip()])
     return "\n".join(lines)
@@ -192,6 +200,31 @@ def _newest_sibling_codex_exe(path: Path) -> Path | None:
     if not candidates:
         return None
     return max(candidates, key=lambda item: item.stat().st_mtime)
+
+
+def _codex_image_args(attachments: tuple[Path, ...]) -> list[str]:
+    """Codex CLIの--imageへ渡せる画像添付だけを引数化します。"""
+    args: list[str] = []
+    for path in attachments:
+        if not _is_codex_image(path):
+            continue
+        args.extend(["--image", str(path.resolve(strict=False))])
+    return args
+
+
+def _is_codex_image(path: Path) -> bool:
+    """Codex CLIが画像入力として受け取れる拡張子かを判定します。"""
+    return path.suffix.lower() in CODEX_IMAGE_SUFFIXES
+
+
+def _insert_codex_image_args(parts: list[str], image_args: list[str]) -> list[str]:
+    """標準入力プロンプト指定の直前に--imageを差し込みます。"""
+    insert_at = len(parts)
+    for index in range(len(parts) - 1, -1, -1):
+        if parts[index] == "-":
+            insert_at = index
+            break
+    return [*parts[:insert_at], *image_args, *parts[insert_at:]]
 
 
 def _read_and_remove(path: Path | None) -> str:

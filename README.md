@@ -34,6 +34,8 @@ VPS側はPlesk公開ディレクトリに置けるPHPだけで動かします。
 
 LINEの `file` / `image` / `video` / `audio` メッセージを受けると、VPS側がLINEのcontent取得APIでバイナリを取得し、公開root外の `private/attachments` に保存します。Windowsワーカーは内部APIの認証付きdownload endpointから添付を取得し、Codexプロンプトへ絶対パスとして渡します。
 
+画像添付はCodex CLIの `--image` にも渡します。PDFや通常ファイルはローカル保存パスをプロンプトに渡し、Codex側が必要に応じてファイルを読み取ります。
+
 既定では以下を拒否します。
 
 - 実行ファイル、スクリプト、DLL/JAR
