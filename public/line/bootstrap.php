@@ -2,7 +2,7 @@
 /**
  * <PROJECT_ROOT>\public\line\bootstrap.php
  *
- * LINE Webhook入口とWindowsワーカー内部APIで共有する設定読込、DB接続、LINE送信、会話保存、検索処理です。
+ * LINE Webhook入口とワーカー内部APIで共有する設定読込、DB接続、LINE送信、会話保存、検索処理です。
  */
 
 declare(strict_types=1);
@@ -88,7 +88,7 @@ function line_agent_required_config(string $key): string
 }
 
 /**
- * MariaDBへPDOで接続します。全テーブルはutf8mb4前提です。
+ * MariaDB/MySQL互換DBへPDOで接続します。全テーブルはutf8mb4前提です。
  */
 function line_agent_db(): PDO
 {
@@ -682,7 +682,7 @@ function line_agent_job_attachments(int $jobId): array
 }
 
 /**
- * 認証済み内部APIから添付バイナリを返します。Windowsワーカーのダウンロード専用です。
+ * 認証済み内部APIから添付バイナリを返します。ワーカーのダウンロード専用です。
  */
 function line_agent_attachment_download_response(int $attachmentId): never
 {
@@ -1090,7 +1090,7 @@ function line_agent_store_delivery_attempt(?int $jobId, string $sourceKey, strin
 }
 
 /**
- * 内部APIトークンを検証します。Windowsワーカーだけが通る境界です。
+ * 内部APIトークンを検証します。ワーカーだけが通る境界です。
  */
 function line_agent_require_worker_auth(): void
 {

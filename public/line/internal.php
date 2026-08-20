@@ -2,7 +2,7 @@
 /**
  * <PROJECT_ROOT>\public\line\internal.php
  *
- * Windows常駐ワーカーがHTTPS経由でジョブ取得、完了報告、ナレッジ検索、heartbeatを行う内部APIです。
+ * 常駐ワーカーがHTTPS経由でジョブ取得、完了報告、ナレッジ検索、heartbeatを行う内部APIです。
  */
 
 declare(strict_types=1);

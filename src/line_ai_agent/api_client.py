@@ -1,6 +1,6 @@
 r"""<PROJECT_ROOT>\src\line_ai_agent\api_client.py
 
-WindowsワーカーからVPS内部APIへアクセスする小さなHTTPクライアントです。
+ワーカーから公開サーバの内部APIへアクセスする小さなHTTPクライアントです。
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ class ApiClient:
         return self._post("health", {})
 
     def heartbeat(self, status_text: str, metadata: dict | None = None) -> dict:
-        """ワーカーの生存状態をVPSへ記録します。"""
+        """ワーカーの生存状態を公開サーバへ記録します。"""
         return self._post("heartbeat", {"worker_id": self._worker_id, "status_text": status_text, "metadata": metadata or {}})
 
     def claim(self, lease_seconds: int) -> dict:
@@ -38,7 +38,7 @@ class ApiClient:
         return self._post("claim", {"worker_id": self._worker_id, "lease_seconds": lease_seconds})
 
     def complete(self, job_id: int, status: str, result_text: str, error_text: str = "") -> dict:
-        """ジョブ結果をVPSへ返し、LINE push送信まで進めます。"""
+        """ジョブ結果を公開サーバへ返し、LINE push送信まで進めます。"""
         return self._post(
             "complete",
             {

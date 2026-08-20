@@ -1,6 +1,6 @@
 r"""<PROJECT_ROOT>\src\line_ai_agent\config.py
 
-Windowsワーカーの.env読込と実行設定を提供します。
+ワーカーの.env読込と実行設定を提供します。
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ def _paths(values: Mapping[str, str], key: str) -> tuple[Path, ...]:
 
 @dataclass(frozen=True)
 class Settings:
-    """Windowsワーカーで使う検証済み設定です。"""
+    """ワーカーで使う検証済み設定です。"""
 
     api_base_url: str
     worker_token: str

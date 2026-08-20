@@ -17,7 +17,7 @@ from typing import Any
 from .projects import ProjectSelection
 
 
-COMMAND_FAILURE_REPLY = "内部処理を完了できませんでした。詳細はWindowsワーカーのログに記録しました。"
+COMMAND_FAILURE_REPLY = "内部処理を完了できませんでした。詳細はワーカーのログに記録しました。"
 AI_AGENT_TIMEOUT_REPLY = "AIエージェントの実行がタイムアウトしました。"
 AI_AGENT_EMPTY_REPLY = "AIエージェントの実行結果が空でした。"
 CODEX_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
@@ -130,7 +130,7 @@ class CodexRunner:
 def build_prompt(job: CodexJob) -> str:
     """LINE会話履歴、検索ナレッジ、添付パスを含むCodex向けプロンプトを構築します。"""
     lines = [
-        "あなたは株式会社NSKのLINE対応AIエージェントです。",
+        "あなたはLINE対応AIエージェントです。",
         "回答は日本語で、LINEで読みやすい短い段落を基本にしてください。",
         "事実と推測を分け、不明点は不明と答えてください。",
         "添付ファイルのパスがある場合は、必要に応じて実際に読み取って回答してください。",

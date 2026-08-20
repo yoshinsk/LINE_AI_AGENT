@@ -1,10 +1,9 @@
 [project]
 name = "line-ai-agent"
 version = "0.1.0"
-description = "LINE webhook ingress and Windows Codex worker for NSK AI agent."
+description = "LINE webhook ingress and Codex worker for an AI agent."
 requires-python = ">=3.11"
 dependencies = []
 
 [tool.unittest]
 start-dir = "tests"
-

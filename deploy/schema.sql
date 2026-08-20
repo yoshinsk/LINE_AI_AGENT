@@ -1,5 +1,5 @@
 -- <PROJECT_ROOT>\deploy\schema.sql
--- LINE Webhook、会話履歴、検索用ナレッジ、Windowsワーカージョブを保持するMariaDBスキーマです。
+-- LINE Webhook、会話履歴、検索用ナレッジ、ワーカージョブを保持するMariaDB/MySQL互換DBスキーマです。
 
 CREATE TABLE IF NOT EXISTS line_sources (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,

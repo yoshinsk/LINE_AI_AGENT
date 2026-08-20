@@ -1,6 +1,6 @@
 r"""<PROJECT_ROOT>\src\line_ai_agent\__main__.py
 
-LINE AI Agent Windowsワーカーのコマンドライン入口です。
+LINE AI Agentワーカーのコマンドライン入口です。
 """
 
 from __future__ import annotations
@@ -21,9 +21,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--env", type=Path, default=None, help="Path to a worker .env file")
     parser.add_argument("--log-level", default="INFO", help="Python logging level")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("health", help="Check the VPS internal API")
+    subparsers.add_parser("health", help="Check the public server internal API")
     subparsers.add_parser("once", help="Claim and process one queued job")
-    subparsers.add_parser("serve", help="Run the Windows worker loop")
+    subparsers.add_parser("serve", help="Run the worker loop")
 
     args = parser.parse_args(argv)
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO), format="%(levelname)s: %(message)s")

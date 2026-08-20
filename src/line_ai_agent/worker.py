@@ -1,6 +1,6 @@
 r"""<PROJECT_ROOT>\src\line_ai_agent\worker.py
 
-VPSのDBキューからジョブを取得し、添付を保存してCodex実行結果をLINEへ返す常駐ワーカーです。
+公開サーバのDBキューからジョブを取得し、添付を保存してCodex実行結果をLINEへ返す常駐ワーカーです。
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class LineWorker:
-    """VPS入口とWindows上のCodex実行をつなぐワーカーサービスです。"""
+    """公開サーバ入口とCodex実行環境をつなぐワーカーサービスです。"""
 
     def __init__(self, settings: Settings, client: ApiClient, runner: CodexRunner, projects: ProjectCatalog) -> None:
         self._settings = settings
@@ -140,6 +140,6 @@ def build_worker(settings: Settings) -> LineWorker:
 
 
 def _safe_file_name(file_name: str) -> str:
-    """VPS側とは別にWindows保存時もファイル名を安全化します。"""
+    """サーバ側とは別にワーカー保存時もファイル名を安全化します。"""
     clean = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", file_name).strip(" .")
     return clean[:180] or "attachment.bin"
