@@ -80,12 +80,7 @@ try {
                 $requestText = "添付ファイルを確認してください。内容を要約し、重要点と次に必要な行動を返信してください。\n" . $summary;
                 $jobId = line_agent_enqueue_job($storedEvent['id'], $sourceInfo, $requestText, null);
                 line_agent_link_recent_attachments_to_job($sourceInfo['source_key'], $jobId, [(int) $attachment['id']]);
-                $ackText = (string) line_agent_config(
-                    'LINE_AI_AGENT_ATTACHMENT_ACK_TEXT',
-                    "添付ファイルを受け付けました。確認後、このトークへ返信します。\nジョブID: #{job_id}"
-                );
-                $ackText = str_replace('\\n', "\n", $ackText);
-                $reply = line_agent_reply($event['replyToken'] ?? null, str_replace('{job_id}', (string) $jobId, $ackText));
+                $reply = line_agent_reply($event['replyToken'] ?? null, line_agent_ack_text('LINE_AI_AGENT_ATTACHMENT_ACK_TEXT', $jobId));
                 line_agent_store_delivery_attempt($jobId, $sourceInfo['source_key'], 'reply_attachment_ack', $reply);
                 $handled++;
             }
@@ -131,17 +126,10 @@ try {
         }
         $jobId = line_agent_enqueue_job($storedEvent['id'], $sourceInfo, $requestText, $projectRef);
         $linkedAttachments = line_agent_link_recent_attachments_to_job($sourceInfo['source_key'], $jobId);
-        $ackText = (string) line_agent_config(
-            'LINE_AI_AGENT_ACK_TEXT',
-            "依頼を受け付けました。処理が完了したらこのトークへ返信します。\nジョブID: #" . $jobId
-        );
-        $ackText = str_replace('\\n', "\n", $ackText);
-        $ackBody = str_replace('{job_id}', (string) $jobId, $ackText);
-        if ($linkedAttachments) {
-            $ackBody .= "\n添付: " . count($linkedAttachments) . "件";
+        if (line_agent_should_send_ack($requestText, $projectRef, count($linkedAttachments))) {
+            $reply = line_agent_reply($event['replyToken'] ?? null, line_agent_ack_text('LINE_AI_AGENT_ACK_TEXT', $jobId));
+            line_agent_store_delivery_attempt($jobId, $sourceInfo['source_key'], 'reply_ack', $reply);
         }
-        $reply = line_agent_reply($event['replyToken'] ?? null, $ackBody);
-        line_agent_store_delivery_attempt($jobId, $sourceInfo['source_key'], 'reply_ack', $reply);
         $handled++;
     }
 

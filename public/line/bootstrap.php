@@ -10,6 +10,7 @@ declare(strict_types=1);
 const LINE_AGENT_DEFAULT_ENV_FILE = __DIR__ . '/../../private/line-ai-agent.env';
 const LINE_AGENT_MAX_LINE_TEXT_CHARS = 4500;
 const LINE_AGENT_DEFAULT_ATTACHMENT_DIR = __DIR__ . '/../../private/attachments';
+const LINE_AGENT_DEFAULT_ACK_TEXT = '改めて返信します。少々お待ちください。';
 
 /**
  * KEY=VALUE形式の設定ファイルを読み込みます。値の引用符は最外周のみ外します。
@@ -729,6 +730,50 @@ function line_agent_is_addressed(array $sourceInfo, string $text): bool
 function line_agent_strip_agent_prefix(string $text): string
 {
     return trim((string) preg_replace('/^(@?AI|@?ai|ＡＩ|ａｉ)\s*[:：　 ]/u', '', trim($text)));
+}
+
+/**
+ * 時間がかかる可能性のある依頼だけ、LINEへ受付返信を出すか判定します。
+ */
+function line_agent_should_send_ack(string $requestText, ?string $projectRef = null, int $attachmentCount = 0): bool
+{
+    if ($attachmentCount > 0 || trim((string) $projectRef) !== '') {
+        return true;
+    }
+
+    $text = trim($requestText);
+    if ($text === '') {
+        return false;
+    }
+    if (str_contains($text, "\n") || str_contains($text, "\r")) {
+        return true;
+    }
+
+    $minChars = max(1, (int) line_agent_config('LINE_AI_AGENT_ACK_MIN_CHARS', '80'));
+    if (mb_strlen($text, 'UTF-8') >= $minChars) {
+        return true;
+    }
+
+    $markers = array_filter(array_map('trim', explode(',', (string) line_agent_config(
+        'LINE_AI_AGENT_ACK_KEYWORDS',
+        '実装,修正,変更,調査,確認,解析,分析,要約,作成,生成,添付,ファイル,画像,ログ,エラー,テスト実行,テストを実行,デプロイ,配置,DB,データベース,commit,push,build,debug,review,tests'
+    ))));
+    foreach ($markers as $marker) {
+        if ($marker !== '' && mb_stripos($text, $marker, 0, 'UTF-8') !== false) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * 受付返信文を設定から取得します。旧設定の{job_id}は互換目的で置換します。
+ */
+function line_agent_ack_text(string $configKey, int $jobId): string
+{
+    $text = (string) line_agent_config($configKey, LINE_AGENT_DEFAULT_ACK_TEXT);
+    $text = str_replace('\\n', "\n", $text);
+    return str_replace('{job_id}', (string) $jobId, $text);
 }
 
 /**

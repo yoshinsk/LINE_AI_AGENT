@@ -25,6 +25,7 @@ VPS側はPlesk公開ディレクトリに置けるPHPだけで動かします。
 - `プロジェクト: alias` / `project: alias` による作業ディレクトリ指定
 - `プロジェクト一覧` のローカル応答
 - `現状報告` による同一トーク内の未完了ジョブ確認
+- 長文、添付、プロジェクト指定など時間がかかる依頼だけ受付返信を送信
 - 会話履歴とAI回答をMariaDBへ保存
 - `FULLTEXT` とLIKEフォールバックによる過去ナレッジ検索
 - 画像、動画、音声、ファイル添付の保存とCodexへのローカルパス連携
@@ -88,6 +89,12 @@ https://example.com/line/
 - `LINE_AI_AGENT_DB_PASS`
 - `LINE_AI_AGENT_WORKER_TOKEN`
 
+受付返信:
+
+- 通常の短文依頼では、Webhook受信時の受付返信は送らず、処理完了後のAI回答だけをpushします。
+- 添付、プロジェクト指定、複数行、長文、または `LINE_AI_AGENT_ACK_KEYWORDS` に一致する依頼では `LINE_AI_AGENT_ACK_TEXT` をreplyします。
+- 添付単体の依頼では `LINE_AI_AGENT_ATTACHMENT_ACK_TEXT` をreplyします。
+
 ## Windowsワーカー設定
 
 ```powershell
@@ -149,4 +156,3 @@ curl -sS https://example.com/line/
 - https://developers.line.biz/en/docs/messaging-api/receiving-messages/
 - https://developers.line.biz/en/docs/messaging-api/verify-webhook-signature/
 - https://developers.line.biz/en/reference/messaging-api/
-
