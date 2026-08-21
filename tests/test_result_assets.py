@@ -5,8 +5,10 @@ Codex生成成果物の検出とLINE本文用のローカルパス除去を検�
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import tempfile
+import time
 import unittest
 
 from line_ai_agent.result_assets import collect_result_asset_paths, sanitize_result_text
@@ -56,6 +58,25 @@ class ResultAssetsTest(unittest.TestCase):
             )
 
             self.assertEqual((result_file.resolve(),), paths)
+
+    def test_rejects_stale_bare_name_outside_job_output_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            allowed_dir = Path(temp_dir) / "generated-images"
+            allowed_dir.mkdir()
+            stale_file = allowed_dir / "call_previous_job.png"
+            stale_file.write_bytes(b"\x89PNG\r\n\x1a\n")
+            stale_time = time.time() - 120
+            os.utime(stale_file, (stale_time, stale_time))
+
+            paths = collect_result_asset_paths(
+                "生成ファイル名: `call_previous_job.png`",
+                Path(temp_dir) / "job-output",
+                (allowed_dir,),
+                5,
+                modified_since=time.time() - 60,
+            )
+
+            self.assertEqual((), paths)
 
     def test_rejects_paths_outside_allowed_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

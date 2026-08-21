@@ -86,9 +86,9 @@ function line_agent_claim_job(array $body): array
 
     $pdo->beginTransaction();
     try {
-        $pdo->exec("UPDATE line_jobs SET status = 'queued', worker_id = NULL, lease_until = NULL WHERE status = 'running' AND lease_until IS NOT NULL AND lease_until < UTC_TIMESTAMP()");
+        $pdo->exec("UPDATE line_jobs SET status = 'queued', worker_id = NULL, lease_until = NULL WHERE status = 'running' AND lease_until IS NOT NULL AND lease_until < CURRENT_TIMESTAMP()");
 
-        $stmt = $pdo->query("SELECT * FROM line_jobs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1 FOR UPDATE");
+        $stmt = $pdo->query("SELECT * FROM line_jobs WHERE status = 'queued' ORDER BY created_at ASC, id ASC LIMIT 1 FOR UPDATE");
         $job = $stmt->fetch();
         if (!$job) {
             $pdo->commit();
@@ -97,7 +97,7 @@ function line_agent_claim_job(array $body): array
 
         $update = $pdo->prepare(
             "UPDATE line_jobs
-                SET status = 'running', worker_id = :worker_id, started_at = COALESCE(started_at, UTC_TIMESTAMP()), lease_until = DATE_ADD(UTC_TIMESTAMP(), INTERVAL :lease_seconds SECOND)
+                SET status = 'running', worker_id = :worker_id, started_at = COALESCE(started_at, CURRENT_TIMESTAMP()), lease_until = DATE_ADD(CURRENT_TIMESTAMP(), INTERVAL :lease_seconds SECOND)
               WHERE id = :id"
         );
         $update->bindValue(':worker_id', $workerId, PDO::PARAM_STR);
@@ -135,6 +135,7 @@ function line_agent_claim_job(array $body): array
 function line_agent_complete_job(array $body): array
 {
     $jobId = (int) ($body['job_id'] ?? 0);
+    $workerId = trim((string) ($body['worker_id'] ?? ''));
     $status = (string) ($body['status'] ?? 'succeeded');
     $resultText = trim((string) ($body['result_text'] ?? ''));
     $errorText = trim((string) ($body['error_text'] ?? ''));
@@ -149,32 +150,54 @@ function line_agent_complete_job(array $body): array
     if (!$job) {
         line_agent_json_response(['ok' => false, 'error' => 'job_not_found'], 404);
     }
+    if (in_array((string) $job['status'], ['succeeded', 'failed', 'delivery_failed'], true)) {
+        return [
+            'ok' => true,
+            'delivery' => [
+                'accepted' => (string) $job['status'] !== 'delivery_failed',
+                'already_completed' => true,
+            ],
+        ];
+    }
+    if ((string) $job['status'] !== 'running' || $workerId === '' || !hash_equals((string) $job['worker_id'], $workerId)) {
+        line_agent_json_response(['ok' => false, 'error' => 'job_not_claimed'], 409);
+    }
 
     $replyText = $resultText !== '' ? $resultText : ($status === 'failed' ? '内部処理を完了できませんでした。' : '処理結果が空でした。');
+    $delivery = line_agent_push((string) $job['source_external_id'], $replyText, line_agent_job_quote_token($job), $assets);
+    $deliveryAccepted = line_agent_line_delivery_accepted($delivery);
+    line_agent_store_delivery_attempt($jobId, (string) $job['source_key'], 'push_result', $delivery);
+
+    $finalStatus = $deliveryAccepted ? $status : 'delivery_failed';
+    if (!$deliveryAccepted) {
+        $deliveryError = sprintf('LINE push message was not accepted (HTTP %d).', (int) ($delivery['status_code'] ?? 0));
+        $errorText = trim($errorText === '' ? $deliveryError : $errorText . "\n" . $deliveryError);
+    }
     $update = line_agent_db()->prepare(
         "UPDATE line_jobs
-            SET status = :status, result_text = :result_text, error_text = :error_text, finished_at = UTC_TIMESTAMP(), lease_until = NULL
+            SET status = :status, result_text = :result_text, error_text = :error_text, finished_at = CURRENT_TIMESTAMP(), lease_until = NULL
           WHERE id = :id"
     );
     $update->execute([
-        ':status' => $status,
+        ':status' => $finalStatus,
         ':result_text' => $resultText,
         ':error_text' => $errorText,
         ':id' => $jobId,
     ]);
 
-    $messageId = line_agent_store_message((string) $job['source_key'], 'assistant', $replyText, null, null);
-    line_agent_store_knowledge_chunks((string) $job['source_key'], 'assistant', $replyText, $messageId, $jobId, [
-        'job_status' => $status,
-    ]);
-
-    $delivery = line_agent_push((string) $job['source_external_id'], $replyText, line_agent_job_quote_token($job), $assets);
-    line_agent_store_delivery_attempt($jobId, (string) $job['source_key'], 'push_result', $delivery);
+    if ($deliveryAccepted) {
+        $messageId = line_agent_store_message((string) $job['source_key'], 'assistant', $replyText, null, null);
+        line_agent_store_knowledge_chunks((string) $job['source_key'], 'assistant', $replyText, $messageId, $jobId, [
+            'job_status' => $status,
+        ]);
+    }
 
     line_agent_json_response([
         'ok' => true,
         'delivery' => [
             'status_code' => $delivery['status_code'],
+            'accepted' => $deliveryAccepted,
+            'attempt_count' => $delivery['attempt_count'] ?? 1,
         ],
     ]);
 }

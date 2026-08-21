@@ -71,9 +71,16 @@ def default_result_asset_allowed_dirs(config_base: Path) -> tuple[Path, ...]:
     )
 
 
-def collect_result_asset_paths(text: str, output_dir: Path, allowed_dirs: tuple[Path, ...], max_count: int) -> tuple[Path, ...]:
-    """ジョブ成果物、回答文の絶対パス、許可領域内の生成ファイル名から送信対象を集めます。"""
+def collect_result_asset_paths(
+    text: str,
+    output_dir: Path,
+    allowed_dirs: tuple[Path, ...],
+    max_count: int,
+    modified_since: float | None = None,
+) -> tuple[Path, ...]:
+    """ジョブ成果物と、実行開始後に更新された許可領域内の参照ファイルだけを集めます。"""
     roots = _resolved_roots((output_dir, *allowed_dirs))
+    output_roots = _resolved_roots((output_dir,))
     candidates = [
         *_files_under(output_dir),
         *(_path_from_text(item) for item in _path_strings(text)),
@@ -92,6 +99,8 @@ def collect_result_asset_paths(text: str, output_dir: Path, allowed_dirs: tuple[
         if key in seen or not resolved.is_file():
             continue
         if not _is_inside_any(resolved, roots) or not is_result_asset_allowed(resolved):
+            continue
+        if not _is_inside_any(resolved, output_roots) and not _is_modified_since(resolved, modified_since):
             continue
         collected.append(resolved)
         seen.add(key)
@@ -195,3 +204,13 @@ def _is_inside_any(path: Path, roots: tuple[Path, ...]) -> bool:
         except ValueError:
             continue
     return False
+
+
+def _is_modified_since(path: Path, cutoff: float | None) -> bool:
+    """ジョブ固有ではない許可領域のファイルが今回の実行中に更新されたか確認します。"""
+    if cutoff is None:
+        return True
+    try:
+        return path.stat().st_mtime >= cutoff
+    except OSError:
+        return False

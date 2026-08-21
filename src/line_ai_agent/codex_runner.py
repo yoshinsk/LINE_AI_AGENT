@@ -12,6 +12,7 @@ import re
 import shlex
 import subprocess
 import tempfile
+import time
 from typing import Any
 
 from .projects import ProjectSelection
@@ -91,6 +92,7 @@ class CodexRunner:
         if job.result_asset_dir:
             env["LINE_AI_AGENT_RESULT_ASSET_DIR"] = str(job.result_asset_dir)
 
+        execution_started_at = time.time()
         try:
             completed = subprocess.run(
                 args,
@@ -123,6 +125,7 @@ class CodexRunner:
             job.result_asset_dir or self._result_asset_output_dir / f"job-{job.job_id}",
             self._result_asset_allowed_dirs,
             self._result_asset_max_count,
+            modified_since=execution_started_at - 2.0,
         )
         text = sanitize_result_text(raw_text, asset_paths)
         return CodexResult(_clip(text, self._reply_max_chars), True, asset_paths)

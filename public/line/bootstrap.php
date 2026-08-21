@@ -430,28 +430,89 @@ function line_agent_line_api_post(string $path, array $payload): array
     $token = line_agent_required_config('LINE_CHANNEL_ACCESS_TOKEN');
     $url = 'https://api.line.me' . $path;
     $json = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    $headers = [
-        'Content-Type: application/json',
-        'Authorization: Bearer ' . $token,
-    ];
-    $context = stream_context_create([
-        'http' => [
-            'method' => 'POST',
-            'header' => implode("\r\n", $headers),
-            'content' => $json,
-            'ignore_errors' => true,
-            'timeout' => 20,
-        ],
-    ]);
-    $body = file_get_contents($url, false, $context);
-    $statusCode = 0;
-    foreach ($http_response_header ?? [] as $header) {
-        if (preg_match('/^HTTP\/\S+\s+(\d+)/', $header, $matches)) {
-            $statusCode = (int) $matches[1];
+    if ($json === false) {
+        throw new RuntimeException('LINE request JSON could not be encoded');
+    }
+
+    $isPush = $path === '/v2/bot/message/push';
+    $maxAttempts = $isPush
+        ? max(1, min(5, (int) line_agent_config('LINE_AI_AGENT_PUSH_MAX_ATTEMPTS', '3')))
+        : 1;
+    $retryDelayMs = max(0, min(5000, (int) line_agent_config('LINE_AI_AGENT_PUSH_RETRY_DELAY_MS', '500')));
+    $retryKey = $isPush ? line_agent_line_retry_key() : null;
+    $result = ['status_code' => 0, 'body' => '', 'attempt_count' => 0, 'retry_key' => $retryKey];
+
+    for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+        $headers = [
+            'Content-Type: application/json',
+            'Authorization: Bearer ' . $token,
+        ];
+        if ($retryKey !== null) {
+            $headers[] = 'X-Line-Retry-Key: ' . $retryKey;
+        }
+        $context = stream_context_create([
+            'http' => [
+                'method' => 'POST',
+                'header' => implode("\r\n", $headers),
+                'content' => $json,
+                'ignore_errors' => true,
+                'timeout' => 20,
+            ],
+        ]);
+        // 接続不能時に前回試行のHTTP応答ヘッダを誤用しないよう、試行ごとに初期化します。
+        $http_response_header = [];
+        $body = file_get_contents($url, false, $context);
+        $statusCode = 0;
+        foreach ($http_response_header ?? [] as $header) {
+            if (preg_match('/^HTTP\/\S+\s+(\d+)/', $header, $matches)) {
+                $statusCode = (int) $matches[1];
+                break;
+            }
+        }
+        $result = [
+            'status_code' => $statusCode,
+            'body' => (string) $body,
+            'attempt_count' => $attempt,
+            'retry_key' => $retryKey,
+        ];
+        if (line_agent_line_delivery_accepted($result) || !line_agent_line_status_retryable($statusCode) || $attempt === $maxAttempts) {
             break;
         }
+        if ($retryDelayMs > 0) {
+            usleep($retryDelayMs * 1000 * (2 ** min($attempt - 1, 3)));
+        }
     }
-    return ['status_code' => $statusCode, 'body' => (string) $body];
+    return $result;
+}
+
+/**
+ * push messageの2xxと、同じ再試行キーが受理済みである409を配信受理として扱います。
+ */
+function line_agent_line_delivery_accepted(array $result): bool
+{
+    $statusCode = (int) ($result['status_code'] ?? 0);
+    return ($statusCode >= 200 && $statusCode < 300) || $statusCode === 409;
+}
+
+/**
+ * LINE公式仕様に従い、5xxまたは応答なしだけを同一retry keyで再試行します。
+ */
+function line_agent_line_status_retryable(int $statusCode): bool
+{
+    return $statusCode === 0 || $statusCode >= 500;
+}
+
+/**
+ * push message再試行に使うRFC 4122 version 4形式のUUIDを生成します。
+ */
+function line_agent_line_retry_key(): string
+{
+    $bytes = random_bytes(16);
+    $bytes[6] = chr((ord($bytes[6]) & 0x0f) | 0x40);
+    $bytes[8] = chr((ord($bytes[8]) & 0x3f) | 0x80);
+    $hex = bin2hex($bytes);
+    return substr($hex, 0, 8) . '-' . substr($hex, 8, 4) . '-' . substr($hex, 12, 4)
+        . '-' . substr($hex, 16, 4) . '-' . substr($hex, 20);
 }
 
 /**
@@ -992,7 +1053,7 @@ function line_agent_attachment_summary(array $attachment): string
 }
 
 /**
- * 同一会話の直近添付をジョブへ紐づけます。添付は後続の指示でも再利用できます。
+ * 同一会話の直近添付をジョブへ紐づけます。自動要約を除き、後続指示への再利用は1回に限定します。
  */
 function line_agent_link_recent_attachments_to_job(string $sourceKey, int $jobId, array $attachmentIds = []): array
 {
@@ -1013,10 +1074,23 @@ function line_agent_link_recent_attachments_to_job(string $sourceKey, int $jobId
                 AND attachment.storage_status IN ('stored', 'external')
                 AND attachment.created_at >= DATE_SUB(CURRENT_TIMESTAMP, INTERVAL $minutes MINUTE)
                 AND linked.job_id IS NULL
-              ORDER BY attachment.created_at DESC
+                AND NOT EXISTS (
+                    SELECT 1
+                      FROM line_job_attachment_links prior_link
+                      JOIN line_jobs prior_job ON prior_job.id = prior_link.job_id
+                     WHERE prior_link.attachment_id = attachment.id
+                       AND prior_job.id <> :current_job_id
+                       AND prior_job.request_text NOT LIKE :attachment_auto_request
+                )
+              ORDER BY attachment.created_at DESC, attachment.id DESC
               LIMIT $limit"
         );
-        $stmt->execute([':job_id' => $jobId, ':source_key' => $sourceKey]);
+        $stmt->execute([
+            ':job_id' => $jobId,
+            ':current_job_id' => $jobId,
+            ':source_key' => $sourceKey,
+            ':attachment_auto_request' => '添付ファイルを確認してください。%',
+        ]);
         $attachmentIds = array_map('intval', array_column($stmt->fetchAll(), 'id'));
     }
 
@@ -1065,7 +1139,7 @@ function line_agent_job_attachments(int $jobId): array
            FROM line_attachments attachment
            JOIN line_job_attachment_links linked ON linked.attachment_id = attachment.id
           WHERE linked.job_id = :job_id
-          ORDER BY attachment.created_at ASC"
+          ORDER BY attachment.created_at ASC, attachment.id ASC"
     );
     $stmt->execute([':job_id' => $jobId]);
     $items = [];
@@ -1376,7 +1450,7 @@ function line_agent_is_status_request(string $text): bool
 function line_agent_format_runtime_status(string $sourceKey): string
 {
     $stmt = line_agent_db()->prepare(
-        "SELECT id, status, request_text, created_at, started_at FROM line_jobs WHERE source_key = :source_key AND status IN ('queued', 'running') ORDER BY created_at ASC LIMIT 10"
+        "SELECT id, status, request_text, error_text, created_at, started_at FROM line_jobs WHERE source_key = :source_key AND status IN ('queued', 'running', 'delivery_failed') ORDER BY created_at ASC, id ASC LIMIT 10"
     );
     $stmt->execute([':source_key' => $sourceKey]);
     $jobs = $stmt->fetchAll();
@@ -1384,10 +1458,13 @@ function line_agent_format_runtime_status(string $sourceKey): string
         return '現在、未完了の作業はありません。';
     }
 
-    $lines = ['未完了の作業:'];
+    $lines = ['進行中または要確認の作業:'];
     foreach ($jobs as $job) {
         $preview = mb_substr(trim((string) $job['request_text']), 0, 80, 'UTF-8');
         $lines[] = sprintf('#%s %s %s', $job['id'], $job['status'], $preview);
+        if ((string) $job['status'] === 'delivery_failed') {
+            $lines[] = '  LINEへの配信を確認できません。依頼をもう一度送信してください。';
+        }
     }
     return implode("\n", $lines);
 }
@@ -1417,7 +1494,7 @@ function line_agent_enqueue_job(?int $eventId, array $sourceInfo, string $reques
 function line_agent_recent_messages(string $sourceKey, int $limit = 12): array
 {
     $stmt = line_agent_db()->prepare(
-        'SELECT role, body, created_at FROM line_messages WHERE source_key = :source_key ORDER BY created_at DESC LIMIT :limit'
+        'SELECT role, body, created_at FROM line_messages WHERE source_key = :source_key ORDER BY created_at DESC, id DESC LIMIT :limit'
     );
     $stmt->bindValue(':source_key', $sourceKey, PDO::PARAM_STR);
     $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
@@ -1439,7 +1516,7 @@ function line_agent_search_knowledge(string $sourceKey, string $query, int $limi
             'SELECT role, text, created_at, MATCH(text) AGAINST(:query IN NATURAL LANGUAGE MODE) AS score
                FROM line_knowledge_chunks
               WHERE source_key = :source_key AND MATCH(text) AGAINST(:query IN NATURAL LANGUAGE MODE)
-              ORDER BY score DESC, created_at DESC
+              ORDER BY score DESC, created_at DESC, id DESC
               LIMIT :limit'
         );
         $stmt->bindValue(':source_key', $sourceKey, PDO::PARAM_STR);
@@ -1467,7 +1544,7 @@ function line_agent_search_knowledge(string $sourceKey, string $query, int $limi
         $params[$key] = '%' . $token . '%';
     }
     $sql = 'SELECT role, text, created_at, 0 AS score FROM line_knowledge_chunks WHERE ' . implode(' AND ', $where)
-        . ' ORDER BY created_at DESC LIMIT ' . max(1, min(20, $limit));
+        . ' ORDER BY created_at DESC, id DESC LIMIT ' . max(1, min(20, $limit));
     $stmt = line_agent_db()->prepare($sql);
     $stmt->execute($params);
     return $stmt->fetchAll();

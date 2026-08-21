@@ -78,7 +78,8 @@ class LineWorker:
             request_text = str(job_payload.get("request_text", ""))
             if is_project_list_request(request_text):
                 result_text = self._projects.format_project_list()
-                self._client.complete(job_id, "succeeded", result_text)
+                completion = self._client.complete(job_id, "succeeded", result_text)
+                self._log_delivery_result(job_id, completion)
                 return True
 
             project = self._projects.select(job_payload.get("project_ref"))
@@ -95,12 +96,25 @@ class LineWorker:
             result = self._runner.run(codex_job)
             assets, upload_errors = self._upload_result_assets(job_id, result.asset_paths)
             result_text = _append_upload_errors(result.text, upload_errors)
-            self._client.complete(job_id, "succeeded" if result.ok else "failed", result_text, assets=assets)
+            completion = self._client.complete(job_id, "succeeded" if result.ok else "failed", result_text, assets=assets)
+            self._log_delivery_result(job_id, completion)
             return True
         except Exception as exc:
             LOGGER.exception("job #%s failed", job_id)
             self._client.complete(job_id, "failed", "内部処理を完了できませんでした。", str(exc))
             return True
+
+    @staticmethod
+    def _log_delivery_result(job_id: int, completion: dict[str, Any]) -> None:
+        """内部APIがLINE配信を未受理と返した場合、成功ログに埋もれないよう明示します。"""
+        delivery = completion.get("delivery") if isinstance(completion, dict) else None
+        if isinstance(delivery, dict) and delivery.get("accepted") is False:
+            LOGGER.error(
+                "job #%s LINE delivery was not accepted status=%s attempts=%s",
+                job_id,
+                delivery.get("status_code", "unknown"),
+                delivery.get("attempt_count", "unknown"),
+            )
 
     def _download_attachments(self, job_id: int, attachments: list[dict[str, Any]]) -> list[Path]:
         """ジョブ添付をローカル一時領域へ取得します。"""

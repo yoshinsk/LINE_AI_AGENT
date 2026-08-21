@@ -37,7 +37,7 @@ LINEの `file` / `image` / `video` / `audio` メッセージを受けると、�
 
 画像添付はCodex CLIの `--image` にも渡します。PDFや通常ファイルはローカル保存パスをプロンプトに渡し、Codex側が必要に応じてファイルを読み取ります。
 
-Codexが処理結果としてファイルを生成する場合、ワーカーは `LINE_AGENT_RESULT_ASSET_OUTPUT_DIR` をジョブごとの成果物出力先としてCodexへ渡します。この配下、または `LINE_AGENT_RESULT_ASSET_ALLOWED_DIRS` で許可したディレクトリ配下の生成ファイルは、内部APIでサーバへアップロードされます。Codexが回答本文に絶対パスではなく生成ファイル名だけを返す場合も、許可済みディレクトリ内で実体を探索して送信対象にします。
+Codexが処理結果としてファイルを生成する場合、ワーカーは `LINE_AGENT_RESULT_ASSET_OUTPUT_DIR` をジョブごとの成果物出力先としてCodexへ渡します。この配下の生成ファイルは、内部APIでサーバへアップロードされます。Codexが回答本文に絶対パスではなく生成ファイル名だけを返す場合も、`LINE_AGENT_RESULT_ASSET_ALLOWED_DIRS` 内で今回のジョブ実行中に更新された実体だけを探索して送信対象にします。過去の成果物を送る場合は、ジョブごとの出力先へコピーしてから生成ファイル名を回答します。
 
 サーバは生成ファイルを `LINE_AI_AGENT_PUBLIC_ASSET_DIR` 配下へ保存し、HTTPS公開URLを作ってLINEへ返します。JPEG/PNGはLINEの画像メッセージとして送信します。TXT、PDF、Office文書、CSVなど、LINE Messaging APIで任意ファイルとして直接pushできない形式は、LINE本文内のダウンロードURLとして返します。
 
@@ -50,6 +50,8 @@ AIが生成したファイルは、ローカルパスをLINEへ表示して終�
 3. ワーカーが成果物を `internal.php` の `result_asset` actionへアップロードします。
 4. サーバが `assets/generated/YYYYMMDD/job-{job_id}/` 配下へ保存し、HTTPS URLを発行します。
 5. `complete` actionがAI回答本文と成果物を同じLINE pushにまとめて送信します。
+
+ジョブごとの出力先を使うことで、別の会話や以前のジョブで生成された同名ファイルを誤って送信しません。
 
 画像の送信:
 
@@ -141,6 +143,13 @@ https://example.com/line/
 - `LINE_AI_AGENT_RESULT_ASSET_ALLOWED_EXTENSIONS`: 許可する生成成果物の拡張子
 - `LINE_AI_AGENT_RESULT_ASSET_BLOCKED_EXTENSIONS`: 拒否する生成成果物の拡張子
 
+配信再試行:
+
+- `LINE_AI_AGENT_PUSH_MAX_ATTEMPTS`: push送信の最大試行回数。既定値は `3` です。
+- `LINE_AI_AGENT_PUSH_RETRY_DELAY_MS`: 最初の再試行までの待機ミリ秒。以後は指数バックオフします。既定値は `500` です。
+- pushは通信不通またはHTTP 5xxだけを同一の `X-Line-Retry-Key` で再試行します。HTTP 409は同じ再試行キーによる受理済みとして扱います。
+- 受理を確認できない場合、ジョブ状態を `delivery_failed` として保存し、AI回答・ナレッジを成功扱いで記録しません。`現状報告` で確認でき、依頼を再送して回復できます。
+
 受付返信:
 
 - 通常の短文依頼では、Webhook受信時の受付返信は送らず、処理完了後のAI回答だけをpushします。
@@ -150,9 +159,9 @@ https://example.com/line/
 
 添付の後続指示:
 
-- 画像やファイルを送った後、別メッセージで「この画像をアニメ風に変換」などと指示した場合も、同一会話の直近添付をワーカーへ渡します。
+- 画像やファイルを送った後、別メッセージで「この画像をアニメ風に変換」などと指示した場合、同一会話の直近添付を最初の後続依頼だけへ渡します。
 - 再利用する時間は `LINE_AI_AGENT_ATTACHMENT_CONTEXT_MINUTES` で設定します。既定値は `LINE_AI_AGENT_ATTACHMENT_RECENT_MINUTES` と同じ30分です。
-- 添付とジョブの関連は多対多で記録するため、受信時の自動要約と後続の編集依頼の両方で同じ添付を利用できます。
+- 添付とジョブの関連は多対多で記録します。受信時の自動要約と最初の後続編集依頼には同じ添付を利用できますが、無関係な後続メッセージへは自動流用しません。
 
 ## ワーカー設定（Windows例）
 
@@ -174,6 +183,12 @@ notepad .env
 
 - `LINE_AGENT_RESULT_ASSET_ALLOWED_DIRS`: 回答文中のローカルパスから回収してよいディレクトリ。未設定時は `.state/result-assets` とユーザーのCodex生成画像ディレクトリを対象にします。
 - `LINE_AGENT_RESULT_ASSET_MAX_COUNT`: 1ジョブでアップロードする成果物数の上限
+
+### 複数メッセージの処理順序
+
+Webhookは重複イベントをDBで排除し、対象メッセージごとに独立したジョブを登録します。既定の `LINE_AGENT_WORKER_CONCURRENCY=1` では、全トークを作成順のFIFOで1件ずつ処理するため、複数メッセージでも実行順と返信順を保ちます。
+
+`LINE_AGENT_WORKER_CONCURRENCY` を2以上にすると処理能力は上がりますが、実行時間の差により返信順が元の受信順と異なることがあります。会話順序を重視する運用では `1` を維持してください。
 
 実行:
 
@@ -217,12 +232,14 @@ curl -sS https://example.com/line/
 - 返信はreply message、処理完了後はpush messageを使います。
 - 1回のreply/pushで送れるmessage objectは最大5件です。
 - 画像メッセージで直接送れる画像URLはHTTPSのJPEG/PNGです。任意ファイル形式のpush送信用message typeは前提にしません。
+- push messageの再試行には `X-Line-Retry-Key` を使い、通信不通・5xxのときだけ再試行します。
 
 参照:
 
 - https://developers.line.biz/en/docs/messaging-api/receiving-messages/
 - https://developers.line.biz/en/docs/messaging-api/verify-webhook-signature/
 - https://developers.line.biz/en/reference/messaging-api/
+- https://developers.line.biz/en/docs/messaging-api/retrying-api-request/
 
 ## ライセンス
 
