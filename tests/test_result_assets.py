@@ -40,6 +40,23 @@ class ResultAssetsTest(unittest.TestCase):
             self.assertNotIn(str(result_file), sanitized)
             self.assertIn("image.png", sanitized)
 
+    def test_collects_allowed_file_by_bare_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            allowed_dir = Path(temp_dir) / "generated-images"
+            nested_dir = allowed_dir / "request"
+            nested_dir.mkdir(parents=True)
+            result_file = nested_dir / "call_abc123.png"
+            result_file.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+            paths = collect_result_asset_paths(
+                "生成ファイル名: `call_abc123.png`",
+                Path(temp_dir) / "empty",
+                (allowed_dir,),
+                5,
+            )
+
+            self.assertEqual((result_file.resolve(),), paths)
+
     def test_rejects_paths_outside_allowed_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             allowed_dir = Path(temp_dir) / "allowed"

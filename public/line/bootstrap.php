@@ -992,37 +992,65 @@ function line_agent_attachment_summary(array $attachment): string
 }
 
 /**
- * 直近の未使用添付をジョブへ紐づけます。明示IDがあればそれだけを対象にします。
+ * 同一会話の直近添付をジョブへ紐づけます。添付は後続の指示でも再利用できます。
  */
 function line_agent_link_recent_attachments_to_job(string $sourceKey, int $jobId, array $attachmentIds = []): array
 {
-    if ($attachmentIds) {
-        $placeholders = implode(',', array_fill(0, count($attachmentIds), '?'));
-        $params = array_merge([$jobId, $sourceKey], array_map('intval', $attachmentIds));
+    $attachmentIds = array_values(array_unique(array_filter(array_map('intval', $attachmentIds))));
+    if (!$attachmentIds) {
+        $minutes = max(1, min(1440, (int) line_agent_config(
+            'LINE_AI_AGENT_ATTACHMENT_CONTEXT_MINUTES',
+            (string) line_agent_config('LINE_AI_AGENT_ATTACHMENT_RECENT_MINUTES', '30')
+        )));
+        $limit = max(1, min(10, (int) line_agent_config('LINE_AI_AGENT_ATTACHMENT_MAX_PER_JOB', '5')));
         $stmt = line_agent_db()->prepare(
-            "UPDATE line_attachments SET job_id = ? WHERE source_key = ? AND id IN ($placeholders) AND storage_status IN ('stored', 'external')"
+            "SELECT attachment.id
+               FROM line_attachments attachment
+          LEFT JOIN line_job_attachment_links linked
+                 ON linked.attachment_id = attachment.id
+                AND linked.job_id = :job_id
+              WHERE attachment.source_key = :source_key
+                AND attachment.storage_status IN ('stored', 'external')
+                AND attachment.created_at >= DATE_SUB(CURRENT_TIMESTAMP, INTERVAL $minutes MINUTE)
+                AND linked.job_id IS NULL
+              ORDER BY attachment.created_at DESC
+              LIMIT $limit"
         );
-        $stmt->execute($params);
-        return line_agent_job_attachments($jobId);
+        $stmt->execute([':job_id' => $jobId, ':source_key' => $sourceKey]);
+        $attachmentIds = array_map('intval', array_column($stmt->fetchAll(), 'id'));
     }
 
-    $minutes = max(1, min(1440, (int) line_agent_config('LINE_AI_AGENT_ATTACHMENT_RECENT_MINUTES', '30')));
-    $limit = max(1, min(10, (int) line_agent_config('LINE_AI_AGENT_ATTACHMENT_MAX_PER_JOB', '5')));
-    $stmt = line_agent_db()->prepare(
-        "SELECT id FROM line_attachments
-          WHERE source_key = :source_key
-            AND job_id IS NULL
-            AND storage_status IN ('stored', 'external')
-            AND created_at >= DATE_SUB(CURRENT_TIMESTAMP, INTERVAL $minutes MINUTE)
-          ORDER BY created_at DESC
-          LIMIT $limit"
-    );
-    $stmt->execute([':source_key' => $sourceKey]);
-    $ids = array_map('intval', array_column($stmt->fetchAll(), 'id'));
-    if (!$ids) {
+    if (!$attachmentIds) {
         return [];
     }
-    return line_agent_link_recent_attachments_to_job($sourceKey, $jobId, $ids);
+    return line_agent_link_attachments_to_job($sourceKey, $jobId, $attachmentIds);
+}
+
+/**
+ * 添付とジョブの多対多関連を保存し、旧列は最初の関連だけを互換情報として残します。
+ */
+function line_agent_link_attachments_to_job(string $sourceKey, int $jobId, array $attachmentIds): array
+{
+    $placeholders = implode(',', array_fill(0, count($attachmentIds), '?'));
+    $pdo = line_agent_db();
+    $insert = $pdo->prepare(
+        "INSERT IGNORE INTO line_job_attachment_links (job_id, attachment_id)
+         SELECT ?, id
+           FROM line_attachments
+          WHERE source_key = ?
+            AND id IN ($placeholders)
+            AND storage_status IN ('stored', 'external')"
+    );
+    $insert->execute(array_merge([$jobId, $sourceKey], $attachmentIds));
+
+    $legacy = $pdo->prepare(
+        "UPDATE line_attachments
+            SET job_id = COALESCE(job_id, ?)
+          WHERE source_key = ?
+            AND id IN ($placeholders)"
+    );
+    $legacy->execute(array_merge([$jobId, $sourceKey], $attachmentIds));
+    return line_agent_job_attachments($jobId);
 }
 
 /**
@@ -1031,10 +1059,13 @@ function line_agent_link_recent_attachments_to_job(string $sourceKey, int $jobId
 function line_agent_job_attachments(int $jobId): array
 {
     $stmt = line_agent_db()->prepare(
-        "SELECT id, message_type, original_file_name, file_size, content_type, sha256, storage_status, metadata_json, created_at
-           FROM line_attachments
-          WHERE job_id = :job_id
-          ORDER BY created_at ASC"
+        "SELECT attachment.id, attachment.message_type, attachment.original_file_name, attachment.file_size,
+                attachment.content_type, attachment.sha256, attachment.storage_status, attachment.metadata_json,
+                attachment.created_at
+           FROM line_attachments attachment
+           JOIN line_job_attachment_links linked ON linked.attachment_id = attachment.id
+          WHERE linked.job_id = :job_id
+          ORDER BY attachment.created_at ASC"
     );
     $stmt->execute([':job_id' => $jobId]);
     $items = [];

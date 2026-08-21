@@ -57,6 +57,10 @@ RESULT_ASSET_BLOCKED_SUFFIXES = {
 _SUFFIX_PATTERN = "|".join(re.escape(item.lstrip(".")) for item in sorted(RESULT_ASSET_SUFFIXES, key=len, reverse=True))
 _WINDOWS_PATH_PATTERN = re.compile(rf"[A-Za-z]:\\[^\r\n<>\"|?*]+?\.({_SUFFIX_PATTERN})(?=$|[\s\r\n\"')\]}}、。,.）】])", re.IGNORECASE)
 _POSIX_PATH_PATTERN = re.compile(rf"/[^\r\n<>\"|?*]+?\.({_SUFFIX_PATTERN})(?=$|[\s\r\n\"')\]}}、。,.）】])", re.IGNORECASE)
+_BARE_FILE_NAME_PATTERN = re.compile(
+    rf"(?<![A-Za-z0-9_.\-/\\])([A-Za-z0-9][A-Za-z0-9_.-]*\.({_SUFFIX_PATTERN}))(?=$|[\s\r\n\"')\]}}、。,.）】`])",
+    re.IGNORECASE,
+)
 
 
 def default_result_asset_allowed_dirs(config_base: Path) -> tuple[Path, ...]:
@@ -68,9 +72,13 @@ def default_result_asset_allowed_dirs(config_base: Path) -> tuple[Path, ...]:
 
 
 def collect_result_asset_paths(text: str, output_dir: Path, allowed_dirs: tuple[Path, ...], max_count: int) -> tuple[Path, ...]:
-    """ジョブ成果物ディレクトリと回答文の絶対パスから送信対象ファイルを集めます。"""
+    """ジョブ成果物、回答文の絶対パス、許可領域内の生成ファイル名から送信対象を集めます。"""
     roots = _resolved_roots((output_dir, *allowed_dirs))
-    candidates = [*_files_under(output_dir), *(_path_from_text(item) for item in _path_strings(text))]
+    candidates = [
+        *_files_under(output_dir),
+        *(_path_from_text(item) for item in _path_strings(text)),
+        *(path for name in _file_name_strings(text) for path in _files_named(name, roots)),
+    ]
     collected: list[Path] = []
     seen: set[str] = set()
     for candidate in candidates:
@@ -143,11 +151,32 @@ def _files_under(path: Path) -> list[Path]:
     return sorted(files, key=lambda item: item.stat().st_mtime, reverse=True)
 
 
+def _files_named(file_name: str, roots: tuple[Path, ...]) -> list[Path]:
+    """許可済み領域を対象に、Codexが本文で返したファイル名の実体を更新順で探します。"""
+    matches: list[Path] = []
+    for root in roots:
+        try:
+            matches.extend(item for item in root.rglob("*") if item.is_file() and item.name == file_name)
+        except OSError:
+            continue
+    return sorted(matches, key=lambda item: item.stat().st_mtime, reverse=True)
+
+
 def _path_strings(text: str) -> list[str]:
     """回答文中のWindows/POSIX絶対パス候補を取り出します。"""
     values: list[str] = []
     for pattern in (_WINDOWS_PATH_PATTERN, _POSIX_PATH_PATTERN):
         values.extend(match.group(0).strip().rstrip("。、.,") for match in pattern.finditer(text))
+    return values
+
+
+def _file_name_strings(text: str) -> list[str]:
+    """回答文中の裸の成果物ファイル名を重複なく取り出します。"""
+    values: list[str] = []
+    for match in _BARE_FILE_NAME_PATTERN.finditer(text):
+        value = match.group(1)
+        if value not in values:
+            values.append(value)
     return values
 
 

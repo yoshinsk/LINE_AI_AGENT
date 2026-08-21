@@ -89,6 +89,23 @@ CREATE TABLE IF NOT EXISTS line_attachments (
   CONSTRAINT fk_line_attachments_job_id FOREIGN KEY (job_id) REFERENCES line_jobs(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- 同じ添付を「受信時の要約」と「後続の編集依頼」の両方へ安全に関連付けます。
+CREATE TABLE IF NOT EXISTS line_job_attachment_links (
+  job_id BIGINT UNSIGNED NOT NULL,
+  attachment_id BIGINT UNSIGNED NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (job_id, attachment_id),
+  KEY idx_line_job_attachment_links_attachment (attachment_id, created_at),
+  CONSTRAINT fk_line_job_attachment_links_job_id FOREIGN KEY (job_id) REFERENCES line_jobs(id) ON DELETE CASCADE,
+  CONSTRAINT fk_line_job_attachment_links_attachment_id FOREIGN KEY (attachment_id) REFERENCES line_attachments(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 旧実装で1件だけ保持していた関連を、新しい多対多テーブルへ移行します。
+INSERT IGNORE INTO line_job_attachment_links (job_id, attachment_id)
+SELECT job_id, id
+  FROM line_attachments
+ WHERE job_id IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS line_knowledge_chunks (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   source_key VARCHAR(191) NOT NULL,

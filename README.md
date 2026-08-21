@@ -37,7 +37,7 @@ LINEの `file` / `image` / `video` / `audio` メッセージを受けると、�
 
 画像添付はCodex CLIの `--image` にも渡します。PDFや通常ファイルはローカル保存パスをプロンプトに渡し、Codex側が必要に応じてファイルを読み取ります。
 
-Codexが処理結果としてファイルを生成する場合、ワーカーは `LINE_AGENT_RESULT_ASSET_OUTPUT_DIR` をジョブごとの成果物出力先としてCodexへ渡します。この配下、または `LINE_AGENT_RESULT_ASSET_ALLOWED_DIRS` で許可したディレクトリ配下の生成ファイルは、内部APIでサーバへアップロードされます。
+Codexが処理結果としてファイルを生成する場合、ワーカーは `LINE_AGENT_RESULT_ASSET_OUTPUT_DIR` をジョブごとの成果物出力先としてCodexへ渡します。この配下、または `LINE_AGENT_RESULT_ASSET_ALLOWED_DIRS` で許可したディレクトリ配下の生成ファイルは、内部APIでサーバへアップロードされます。Codexが回答本文に絶対パスではなく生成ファイル名だけを返す場合も、許可済みディレクトリ内で実体を探索して送信対象にします。
 
 サーバは生成ファイルを `LINE_AI_AGENT_PUBLIC_ASSET_DIR` 配下へ保存し、HTTPS公開URLを作ってLINEへ返します。JPEG/PNGはLINEの画像メッセージとして送信します。TXT、PDF、Office文書、CSVなど、LINE Messaging APIで任意ファイルとして直接pushできない形式は、LINE本文内のダウンロードURLとして返します。
 
@@ -147,6 +147,12 @@ https://example.com/line/
 - AI回答は、LINEの `quoteToken` が取得できる場合、ユーザーの依頼メッセージへの返信としてpushします。
 - 添付、プロジェクト指定、複数行、長文、または `LINE_AI_AGENT_ACK_KEYWORDS` に一致する依頼では `LINE_AI_AGENT_ACK_TEXT` をreplyします。
 - 添付単体の依頼では `LINE_AI_AGENT_ATTACHMENT_ACK_TEXT` をreplyします。
+
+添付の後続指示:
+
+- 画像やファイルを送った後、別メッセージで「この画像をアニメ風に変換」などと指示した場合も、同一会話の直近添付をワーカーへ渡します。
+- 再利用する時間は `LINE_AI_AGENT_ATTACHMENT_CONTEXT_MINUTES` で設定します。既定値は `LINE_AI_AGENT_ATTACHMENT_RECENT_MINUTES` と同じ30分です。
+- 添付とジョブの関連は多対多で記録するため、受信時の自動要約と後続の編集依頼の両方で同じ添付を利用できます。
 
 ## ワーカー設定（Windows例）
 
