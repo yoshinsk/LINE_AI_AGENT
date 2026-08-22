@@ -13,7 +13,7 @@ import unittest
 
 from docx import Document
 
-from line_ai_agent.codex_runner import CodexJob, CodexRunner, _tail, build_office_revision_prompt, build_prompt, requires_office_revision
+from line_ai_agent.codex_runner import OFFICE_REVISION_OUTPUT_SCHEMA, CodexJob, CodexRunner, _tail, build_office_revision_prompt, build_prompt, requires_office_revision
 from line_ai_agent.projects import ProjectSelection
 
 
@@ -105,6 +105,7 @@ class CodexPromptTest(unittest.TestCase):
         self.assertIn("-revised.docx", prompt)
         self.assertIn("JSON Schemaに厳密に従う編集計画", revision_prompt)
         self.assertIn("kind=word_text", revision_prompt)
+        self.assertIn("全項目を必ず含めてください", revision_prompt)
 
     def test_office_summary_request_does_not_require_a_revision_file(self) -> None:
         job = CodexJob(
@@ -174,6 +175,11 @@ class CodexPromptTest(unittest.TestCase):
 
         self.assertIn("ERROR: schema is invalid", shortened)
         self.assertTrue(shortened.startswith("...（起動時出力を省略）"))
+
+    def test_office_revision_schema_requires_every_edit_property(self) -> None:
+        item = OFFICE_REVISION_OUTPUT_SCHEMA["properties"]["files"]["items"]["properties"]["edits"]["items"]
+
+        self.assertEqual(set(item["properties"]), set(item["required"]))
 
 
 if __name__ == "__main__":

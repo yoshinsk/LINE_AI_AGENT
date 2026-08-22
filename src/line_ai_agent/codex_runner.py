@@ -311,6 +311,7 @@ def build_office_revision_prompt(job: CodexJob) -> str:
             "Excelのeditsは kind=excel_cell とし、sheet、cell、expected、replacementをすべて設定してください。expectedは抽出内容にあるセル値と完全一致させてください。",
             "PowerPointのeditsは kind=pptx_text とし、findには抽出したスライド本文に完全一致する原文、replacementには修正後の文言を設定してください。",
             "PDFのeditsは kind=pdf_text とし、findには同一ページ上で連続して検索できる短い原文、replacementには修正後の文言を設定してください。",
+            "各editには kind、find、sheet、cell、expected、replacementの全項目を必ず含めてください。該当しない項目は空文字列にしてください。",
             "誤字・表現の修正など、実際に変更する項目だけを列挙してください。数式セルを変更してはいけません。",
             "summaryには、修正済みファイルを返却する旨を短く日本語で記載してください。",
         ]
@@ -349,7 +350,7 @@ OFFICE_REVISION_OUTPUT_SCHEMA = {
                         "items": {
                             "type": "object",
                             "additionalProperties": False,
-                            "required": ["kind", "replacement"],
+                            "required": ["kind", "find", "sheet", "cell", "expected", "replacement"],
                             "properties": {
                                 "kind": {"type": "string", "enum": ["word_text", "excel_cell", "pptx_text", "pdf_text"]},
                                 "find": {"type": "string"},
