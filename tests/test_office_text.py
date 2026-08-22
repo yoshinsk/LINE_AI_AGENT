@@ -12,10 +12,10 @@ from types import SimpleNamespace
 import unittest
 import zipfile
 
-from line_ai_agent.codex_runner import CodexJob, CodexResult
+import fitz
+
 from line_ai_agent.office_text import extract_office_text
-from line_ai_agent.projects import ProjectSelection
-from line_ai_agent.worker import LineWorker, _has_required_office_result
+from line_ai_agent.worker import LineWorker
 
 
 WORD_DOCUMENT_XML = """<?xml version="1.0" encoding="UTF-8"?>
@@ -53,6 +53,12 @@ SHEET_XML = """<?xml version="1.0" encoding="UTF-8"?>
     <row r="2"><c r="A2" t="s"><v>1</v></c><c r="B2"><f>SUM(1,2)</f><v>3</v></c></row>
   </sheetData>
 </worksheet>
+"""
+
+PPTX_SLIDE_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>発表タイトル</a:t></a:r></a:p><a:p><a:r><a:t>要点です。</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld>
+</p:sld>
 """
 
 
@@ -105,6 +111,33 @@ class OfficeTextTest(unittest.TestCase):
             self.assertIsNotNone(text)
             self.assertIn("抽出テキストは 1000 文字で省略しました", text)
 
+    def test_extracts_pptx_slide_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "presentation.pptx"
+            _write_pptx(path)
+
+            text = extract_office_text(path, 10_000)
+
+            self.assertIsNotNone(text)
+            self.assertIn("[スライド 1]", text)
+            self.assertIn("発表タイトル", text)
+            self.assertIn("要点です。", text)
+
+    def test_extracts_pdf_page_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "report.pdf"
+            document = fitz.open()
+            page = document.new_page()
+            page.insert_text((72, 72), "PDF report text")
+            document.save(path)
+            document.close()
+
+            text = extract_office_text(path, 10_000)
+
+            self.assertIsNotNone(text)
+            self.assertIn("[ページ 1]", text)
+            self.assertIn("PDF report text", text)
+
     def test_worker_saves_office_text_snapshot_for_codex(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             fixture = Path(temp_dir) / "source.docx"
@@ -123,26 +156,6 @@ class OfficeTextTest(unittest.TestCase):
             self.assertTrue(paths[1].name.endswith(".line-office-extracted.txt"))
             self.assertIn("志望動機", paths[1].read_text(encoding="utf-8"))
 
-    def test_office_revision_requires_each_attached_office_format(self) -> None:
-        job = CodexJob(
-            job_id=43,
-            source_key="user:Uxxx",
-            request_text="添付を修正してください。",
-            project=ProjectSelection("none", None, None, "未指定"),
-            recent_messages=(),
-            knowledge=(),
-            attachments=(Path("C:/tmp/source.docx"), Path("C:/tmp/source.xlsx")),
-        )
-
-        self.assertFalse(_has_required_office_result(CodexResult("", True, (Path("C:/tmp/revised.docx"),)), job))
-        self.assertTrue(
-            _has_required_office_result(
-                CodexResult("", True, (Path("C:/tmp/revised.docx"), Path("C:/tmp/revised.xlsx"))),
-                job,
-            )
-        )
-
-
 def _write_docx(path: Path, document_xml: str = WORD_DOCUMENT_XML) -> None:
     """最小のDOCXコンテナを作り、抽出処理を実ファイル同様にテストします。"""
     with zipfile.ZipFile(path, "w") as archive:
@@ -156,6 +169,12 @@ def _write_xlsx(path: Path) -> None:
         archive.writestr("xl/_rels/workbook.xml.rels", WORKBOOK_RELS_XML)
         archive.writestr("xl/sharedStrings.xml", SHARED_STRINGS_XML)
         archive.writestr("xl/worksheets/sheet1.xml", SHEET_XML)
+
+
+def _write_pptx(path: Path) -> None:
+    """最小のスライドXMLを含むPPTXコンテナを作り、PowerPoint本文抽出をテストします。"""
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("ppt/slides/slide1.xml", PPTX_SLIDE_XML)
 
 
 if __name__ == "__main__":

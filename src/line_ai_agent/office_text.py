@@ -1,6 +1,6 @@
 r"""<PROJECT_ROOT>\src\line_ai_agent\office_text.py
 
-LINEで受信したOffice Open XML文書から、Codexへ渡す安全なプレーンテキストを依存パッケージなしで抽出します。
+LINEで受信したWord、Excel、PowerPoint、PDFから、Codexへ渡す安全なプレーンテキストを抽出します。
 """
 
 from __future__ import annotations
@@ -10,12 +10,14 @@ import posixpath
 import xml.etree.ElementTree as ElementTree
 import zipfile
 
+import fitz
 
 WORDPROCESSING_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 SPREADSHEET_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+PRESENTATION_DRAWING_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 OFFICE_RELATIONSHIPS_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 PACKAGE_RELATIONSHIPS_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
-OFFICE_TEXT_SUFFIXES = {".docx", ".xlsx"}
+OFFICE_TEXT_SUFFIXES = {".docx", ".xlsx", ".pptx", ".pdf"}
 
 
 class OfficeTextExtractionError(ValueError):
@@ -23,16 +25,20 @@ class OfficeTextExtractionError(ValueError):
 
 
 def extract_office_text(path: Path, max_chars: int) -> str | None:
-    """DOCX、XLSXの本文・セル値を抽出し、プロンプト投入量を上限で制限します。"""
+    """DOCX、XLSX、PPTX、PDFの本文・セル値を抽出し、プロンプト投入量を上限で制限します。"""
     suffix = path.suffix.lower()
     if suffix not in OFFICE_TEXT_SUFFIXES:
         return None
     try:
         if suffix == ".docx":
             text = _extract_docx_text(path)
-        else:
+        elif suffix == ".xlsx":
             text = _extract_xlsx_text(path)
-    except (ElementTree.ParseError, KeyError, OSError, ValueError, zipfile.BadZipFile) as exc:
+        elif suffix == ".pptx":
+            text = _extract_pptx_text(path)
+        else:
+            text = _extract_pdf_text(path)
+    except (ElementTree.ParseError, KeyError, OSError, RuntimeError, ValueError, zipfile.BadZipFile) as exc:
         raise OfficeTextExtractionError(f"{path.name}: {exc}") from exc
     return _clip_extracted_text(text, max_chars)
 
@@ -102,6 +108,58 @@ def _extract_xlsx_text(path: Path) -> str:
     if not sections:
         raise ValueError("XLSXから読取可能なセル値を取得できませんでした")
     return "\n\n".join(sections)
+
+
+def _extract_pptx_text(path: Path) -> str:
+    """PowerPointのスライドを表示順に走査し、テキストボックスと表の文字列を抽出します。"""
+    with zipfile.ZipFile(path) as archive:
+        members = sorted(
+            (name for name in archive.namelist() if name.startswith("ppt/slides/slide") and name.endswith(".xml")),
+            key=_pptx_slide_sort_key,
+        )
+        sections: list[str] = []
+        for index, member_name in enumerate(members, start=1):
+            root = ElementTree.fromstring(archive.read(member_name))
+            paragraphs = [
+                "".join(item.text or "" for item in paragraph.iter(f"{{{PRESENTATION_DRAWING_NS}}}t")).strip()
+                for paragraph in root.findall(f".//{{{PRESENTATION_DRAWING_NS}}}p")
+            ]
+            content = "\n".join(item for item in paragraphs if item)
+            if content:
+                sections.append(f"[スライド {index}]\n{content}")
+    if not sections:
+        raise ValueError("PPTXから読取可能なテキストを取得できませんでした")
+    return "\n\n".join(sections)
+
+
+def _pptx_slide_sort_key(member_name: str) -> tuple[int, str]:
+    """slide10.xmlがslide2.xmlより前にならないよう、スライド番号を数値で並べます。"""
+    stem = Path(member_name).stem
+    suffix = stem.removeprefix("slide")
+    try:
+        return int(suffix), member_name
+    except ValueError:
+        return 10**9, member_name
+
+
+def _extract_pdf_text(path: Path) -> str:
+    """PDFの各ページからテキストを抽出し、テキスト層がないページも明示してCodexへ渡します。"""
+    document = fitz.open(path)
+    try:
+        if document.needs_pass:
+            raise ValueError("パスワード保護されたPDFは処理できません")
+        sections: list[str] = []
+        for index, page in enumerate(document, start=1):
+            content = page.get_text("text").strip()
+            if content:
+                sections.append(f"[ページ {index}]\n{content}")
+            else:
+                sections.append(f"[ページ {index}]\n[テキスト層がないため本文を抽出できません]")
+        if not sections:
+            raise ValueError("PDFにページがありません")
+        return "\n\n".join(sections)
+    finally:
+        document.close()
 
 
 def _xlsx_shared_strings(archive: zipfile.ZipFile) -> list[str]:

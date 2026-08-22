@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import json
 import os
 import re
 import shlex
@@ -16,6 +17,7 @@ import time
 from typing import Any
 
 from .projects import ProjectSelection
+from .office_revision import OfficeRevisionError, apply_office_revision_plan
 from .result_assets import collect_result_asset_paths, sanitize_result_text
 
 
@@ -23,7 +25,7 @@ COMMAND_FAILURE_REPLY = "内部処理を完了できませんでした。詳細�
 AI_AGENT_TIMEOUT_REPLY = "AIエージェントの実行がタイムアウトしました。"
 AI_AGENT_EMPTY_REPLY = "AIエージェントの実行結果が空でした。"
 CODEX_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
-OFFICE_DOCUMENT_SUFFIXES = {".docx", ".xlsx"}
+OFFICE_DOCUMENT_SUFFIXES = {".docx", ".xlsx", ".pptx", ".pdf"}
 OFFICE_TEXT_SIDECAR_SUFFIX = ".line-office-extracted.txt"
 OFFICE_REVISION_KEYWORDS = (
     "添削",
@@ -94,20 +96,46 @@ class CodexRunner:
 
         return self._run_command(job, build_prompt(job))
 
-    def run_office_revision_retry(self, job: CodexJob) -> CodexResult:
-        """Office修正成果物が未生成だった場合、成果物作成だけを明示してCodexを再実行します。"""
+    def run_office_revision(self, job: CodexJob) -> CodexResult:
+        """Codexの構造化編集計画を回収し、ワーカー側で修正済みOfficeファイルを確実に生成します。"""
         job = self._with_result_asset_dir(job)
         if not self._command:
             return CodexResult("修正済みOfficeファイルを生成できませんでした。", False, ())
 
-        return self._run_command(job, build_office_revision_retry_prompt(job))
+        schema_file = _write_office_revision_schema(job.job_id)
+        try:
+            planned = self._run_command(
+                job,
+                build_office_revision_prompt(job),
+                output_schema_file=schema_file,
+                clip_reply=False,
+            )
+        finally:
+            schema_file.unlink(missing_ok=True)
+        if not planned.ok:
+            return planned
 
-    def _run_command(self, job: CodexJob, prompt: str) -> CodexResult:
+        try:
+            plan = _parse_office_revision_plan(planned.text)
+            assets = apply_office_revision_plan(plan, office_documents(job), job.result_asset_dir or Path())
+        except (OfficeRevisionError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            return CodexResult(f"修正済みOfficeファイルを生成できませんでした。{exc}", False, ())
+        summary = str(plan.get("summary") or "修正済みファイルを作成しました。").strip()
+        return CodexResult(_clip(summary, self._reply_max_chars), True, assets)
+
+    def _run_command(
+        self,
+        job: CodexJob,
+        prompt: str,
+        *,
+        output_schema_file: Path | None = None,
+        clip_reply: bool = True,
+    ) -> CodexResult:
         """指定プロンプトでCodex CLIを一度実行し、今回更新された成果物だけを回収します。"""
 
         workdir = job.project.project_path or self._no_project_workdir
         workdir.mkdir(parents=True, exist_ok=True)
-        args, output_file = self._prepare_command(job)
+        args, output_file = self._prepare_command(job, output_schema_file=output_schema_file)
         env = os.environ.copy()
         env.update(
             {
@@ -157,7 +185,7 @@ class CodexRunner:
             modified_since=execution_started_at - 2.0,
         )
         text = sanitize_result_text(raw_text, asset_paths)
-        return CodexResult(_clip(text, self._reply_max_chars), True, asset_paths)
+        return CodexResult(_clip(text, self._reply_max_chars) if clip_reply else text, True, asset_paths)
 
     def _with_result_asset_dir(self, job: CodexJob) -> CodexJob:
         """ジョブごとの成果物出力ディレクトリを確定し、Codexへ渡せる状態にします。"""
@@ -174,7 +202,7 @@ class CodexRunner:
             result_asset_dir=result_asset_dir,
         )
 
-    def _prepare_command(self, job: CodexJob) -> tuple[tuple[str, ...], Path | None]:
+    def _prepare_command(self, job: CodexJob, *, output_schema_file: Path | None = None) -> tuple[tuple[str, ...], Path | None]:
         """コマンド文字列を分割し、出力先と画像添付引数をジョブ別に組み立てます。"""
         parts = _resolve_stale_codex_parts(_split_command(self._command))
         if not parts:
@@ -190,10 +218,12 @@ class CodexRunner:
         image_args = _codex_image_args(job.attachments)
         if image_args:
             parts = _insert_codex_image_args(parts, image_args)
+        if output_schema_file is not None:
+            parts = _insert_codex_image_args(parts, ["--output-schema", str(output_schema_file)])
         return tuple(parts), output_file
 
 
-def build_prompt(job: CodexJob) -> str:
+def build_prompt(job: CodexJob, *, include_office_file_requirement: bool = True) -> str:
     """LINE会話履歴、検索ナレッジ、添付パスを含むCodex向けプロンプトを構築します。"""
     lines = [
         "あなたはLINE対応AIエージェントです。",
@@ -217,13 +247,13 @@ def build_prompt(job: CodexJob) -> str:
                 "",
             ]
         )
-    if requires_office_revision(job):
+    if include_office_file_requirement and requires_office_revision(job):
         source_names = ", ".join(path.name for path in office_documents(job))
         lines.extend(
             [
                 "Office修正成果物の必須条件:",
                 f"今回の依頼は {source_names} の修正済みファイル返却を求めています。本文の提案だけで完了してはいけません。",
-                "元のDOCX/XLSXをコピーして実際に編集し、元と同じ拡張子の修正済みファイルをLINE送信用の成果物出力先へ保存してください。",
+                "元のDOCX/XLSX/PPTX/PDFをコピーして実際に編集し、元と同じ拡張子の修正済みファイルをLINE送信用の成果物出力先へ保存してください。",
                 "Wordは本文を実ファイル内で修正し、Excelは対象セルの文言を修正してください。Excelの数式・書式・シート構成は保持してください。",
                 "ファイル名は末尾を -revised.docx または -revised.xlsx とし、回答前に出力先に実在することを確認してください。",
                 "ローカルパス、修正案だけの本文、または元ファイルの単なるコピーだけを成果物として返してはいけません。",
@@ -250,7 +280,7 @@ def build_prompt(job: CodexJob) -> str:
             lines.append("画像添付はCodex CLIの--imageにも渡されています。")
         lines.append("")
     if office_text_sidecars:
-        lines.extend(["Office文書から抽出した内容:"])
+        lines.extend(["添付文書から抽出した内容:"])
         for path in office_text_sidecars:
             source_name = path.name.removesuffix(OFFICE_TEXT_SIDECAR_SUFFIX)
             try:
@@ -261,7 +291,7 @@ def build_prompt(job: CodexJob) -> str:
                 lines.extend([f"--- {source_name} ---", extracted_text, "--- 抽出終了 ---"])
         lines.extend(
             [
-                "上記の抽出内容をOffice文書の本文・セル値として読み、元ファイルを読めないことだけを理由に回答を保留しないでください。",
+                "上記の抽出内容を添付文書の本文・セル値として読み、元ファイルを読めないことだけを理由に回答を保留しないでください。",
                 "",
             ]
         )
@@ -269,15 +299,20 @@ def build_prompt(job: CodexJob) -> str:
     return "\n".join(lines)
 
 
-def build_office_revision_retry_prompt(job: CodexJob) -> str:
-    """Office修正の初回実行で成果物がなかったとき、ファイル生成に限定した再試行指示を作ります。"""
+def build_office_revision_prompt(job: CodexJob) -> str:
+    """Office修正用に、ファイル編集ではなく厳格な編集計画JSONをCodexへ要求します。"""
     return "\n".join(
         [
-            build_prompt(job),
+            build_prompt(job, include_office_file_requirement=False),
             "",
-            "重要: 前回の実行ではLINEへ返却できる修正済みOfficeファイルが出力先にありませんでした。",
-            "今回の実行では説明文だけを返さず、元ファイルを実際に編集した -revised.docx または -revised.xlsx を成果物出力先へ必ず作成してください。",
-            "出力ファイルが存在することを確認した後で、生成ファイル名だけを短く回答してください。",
+            "この依頼では、あなた自身でファイルを書き込まず、指定されたJSON Schemaに厳密に従う編集計画だけを最終回答として返してください。",
+            "filesには添付されたDOCX/XLSX/PPTX/PDFをすべて1件ずつ含め、source_fileは添付ファイル名と完全一致させてください。",
+            "Wordのeditsは kind=word_text とし、findには抽出本文内に完全一致する原文、replacementには修正後の文言を設定してください。",
+            "Excelのeditsは kind=excel_cell とし、sheet、cell、expected、replacementをすべて設定してください。expectedは抽出内容にあるセル値と完全一致させてください。",
+            "PowerPointのeditsは kind=pptx_text とし、findには抽出したスライド本文に完全一致する原文、replacementには修正後の文言を設定してください。",
+            "PDFのeditsは kind=pdf_text とし、findには同一ページ上で連続して検索できる短い原文、replacementには修正後の文言を設定してください。",
+            "誤字・表現の修正など、実際に変更する項目だけを列挙してください。数式セルを変更してはいけません。",
+            "summaryには、修正済みファイルを返却する旨を短く日本語で記載してください。",
         ]
     )
 
@@ -291,6 +326,62 @@ def requires_office_revision(job: CodexJob) -> bool:
     """Office添付に対する添削・修正依頼かを、明示的な日本語キーワードで判定します。"""
     request = job.request_text.lower()
     return bool(office_documents(job)) and any(keyword in request for keyword in OFFICE_REVISION_KEYWORDS)
+
+
+OFFICE_REVISION_OUTPUT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["summary", "files"],
+    "properties": {
+        "summary": {"type": "string"},
+        "files": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["source_file", "edits"],
+                "properties": {
+                    "source_file": {"type": "string"},
+                    "edits": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["kind", "replacement"],
+                            "properties": {
+                                "kind": {"type": "string", "enum": ["word_text", "excel_cell", "pptx_text", "pdf_text"]},
+                                "find": {"type": "string"},
+                                "sheet": {"type": "string"},
+                                "cell": {"type": "string"},
+                                "expected": {"type": "string"},
+                                "replacement": {"type": "string"},
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
+
+
+def _write_office_revision_schema(job_id: int) -> Path:
+    """Codex CLIの--output-schemaへ渡すジョブ固有の一時JSON Schemaを保存します。"""
+    directory = Path(tempfile.gettempdir()) / "line-ai-agent"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"office-revision-schema-{job_id}.json"
+    path.write_text(json.dumps(OFFICE_REVISION_OUTPUT_SCHEMA, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def _parse_office_revision_plan(text: str) -> dict[str, Any]:
+    """Schema出力のJSONを読み、後段の編集処理へ渡せるオブジェクトだけを受け付けます。"""
+    parsed = json.loads(text)
+    if not isinstance(parsed, dict):
+        raise OfficeRevisionError("編集計画がJSONオブジェクトではありません。")
+    return parsed
 
 
 def build_dry_run_reply(job: CodexJob) -> str:

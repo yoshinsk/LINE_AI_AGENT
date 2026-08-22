@@ -5,11 +5,15 @@ Codexへ渡すプロンプトに会話履歴、検索ナレッジ、添付パス
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 
-from line_ai_agent.codex_runner import CodexJob, CodexRunner, build_prompt, build_office_revision_retry_prompt, requires_office_revision
+from docx import Document
+
+from line_ai_agent.codex_runner import CodexJob, CodexRunner, build_office_revision_prompt, build_prompt, requires_office_revision
 from line_ai_agent.projects import ProjectSelection
 
 
@@ -94,12 +98,13 @@ class CodexPromptTest(unittest.TestCase):
         )
 
         prompt = build_prompt(job)
-        retry_prompt = build_office_revision_retry_prompt(job)
+        revision_prompt = build_office_revision_prompt(job)
 
         self.assertTrue(requires_office_revision(job))
         self.assertIn("本文の提案だけで完了してはいけません。", prompt)
         self.assertIn("-revised.docx", prompt)
-        self.assertIn("実際に編集した", retry_prompt)
+        self.assertIn("JSON Schemaに厳密に従う編集計画", revision_prompt)
+        self.assertIn("kind=word_text", revision_prompt)
 
     def test_office_summary_request_does_not_require_a_revision_file(self) -> None:
         job = CodexJob(
@@ -113,6 +118,54 @@ class CodexPromptTest(unittest.TestCase):
         )
 
         self.assertFalse(requires_office_revision(job))
+
+    def test_structured_office_plan_becomes_a_returned_docx_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.docx"
+            document = Document()
+            document.add_paragraph("旧表記")
+            document.save(source)
+            script = root / "plan_writer.py"
+            plan = {
+                "summary": "修正済みWord文書を作成しました。",
+                "files": [
+                    {
+                        "source_file": source.name,
+                        "edits": [{"kind": "word_text", "find": "旧表記", "replacement": "新表記"}],
+                    }
+                ],
+            }
+            script.write_text(
+                "import json, sys\nfrom pathlib import Path\n"
+                f"Path(sys.argv[1]).write_text({json.dumps(json.dumps(plan, ensure_ascii=False))}, encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            runner = CodexRunner(
+                command=f"{sys.executable} {script} {{output_file}}",
+                timeout_seconds=30,
+                no_project_workdir=root,
+                reply_max_chars=4500,
+                result_asset_output_dir=root / "result-assets",
+                result_asset_allowed_dirs=(root / "result-assets",),
+                result_asset_max_count=5,
+            )
+            job = CodexJob(
+                job_id=38,
+                source_key="user:Uxxx",
+                request_text="添付を添削して修正してください。",
+                project=ProjectSelection("none", None, None, "未指定"),
+                recent_messages=(),
+                knowledge=(),
+                attachments=(source,),
+            )
+
+            result = runner.run_office_revision(job)
+
+            self.assertTrue(result.ok, result.text)
+            self.assertEqual("修正済みWord文書を作成しました。", result.text)
+            self.assertEqual(1, len(result.asset_paths))
+            self.assertEqual("新表記", Document(result.asset_paths[0]).paragraphs[0].text)
 
 
 if __name__ == "__main__":
