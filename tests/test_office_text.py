@@ -12,8 +12,10 @@ from types import SimpleNamespace
 import unittest
 import zipfile
 
+from line_ai_agent.codex_runner import CodexJob, CodexResult
 from line_ai_agent.office_text import extract_office_text
-from line_ai_agent.worker import LineWorker
+from line_ai_agent.projects import ProjectSelection
+from line_ai_agent.worker import LineWorker, _has_required_office_result
 
 
 WORD_DOCUMENT_XML = """<?xml version="1.0" encoding="UTF-8"?>
@@ -120,6 +122,25 @@ class OfficeTextTest(unittest.TestCase):
             self.assertEqual(".docx", paths[0].suffix)
             self.assertTrue(paths[1].name.endswith(".line-office-extracted.txt"))
             self.assertIn("志望動機", paths[1].read_text(encoding="utf-8"))
+
+    def test_office_revision_requires_each_attached_office_format(self) -> None:
+        job = CodexJob(
+            job_id=43,
+            source_key="user:Uxxx",
+            request_text="添付を修正してください。",
+            project=ProjectSelection("none", None, None, "未指定"),
+            recent_messages=(),
+            knowledge=(),
+            attachments=(Path("C:/tmp/source.docx"), Path("C:/tmp/source.xlsx")),
+        )
+
+        self.assertFalse(_has_required_office_result(CodexResult("", True, (Path("C:/tmp/revised.docx"),)), job))
+        self.assertTrue(
+            _has_required_office_result(
+                CodexResult("", True, (Path("C:/tmp/revised.docx"), Path("C:/tmp/revised.xlsx"))),
+                job,
+            )
+        )
 
 
 def _write_docx(path: Path, document_xml: str = WORD_DOCUMENT_XML) -> None:

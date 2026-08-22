@@ -9,7 +9,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from line_ai_agent.codex_runner import CodexJob, CodexRunner, build_prompt
+from line_ai_agent.codex_runner import CodexJob, CodexRunner, build_prompt, build_office_revision_retry_prompt, requires_office_revision
 from line_ai_agent.projects import ProjectSelection
 
 
@@ -80,6 +80,39 @@ class CodexPromptTest(unittest.TestCase):
             self.assertIn(str(original), prompt)
             self.assertIn("本文: 交換留学を志望する理由です。", prompt)
             self.assertIn("元ファイルを読めないことだけを理由に回答を保留しないでください。", prompt)
+
+    def test_office_revision_prompt_requires_a_real_returned_file(self) -> None:
+        job = CodexJob(
+            job_id=36,
+            source_key="user:Uxxx",
+            request_text="添付の文章を添削して修正してください。",
+            project=ProjectSelection("none", None, None, "未指定"),
+            recent_messages=(),
+            knowledge=(),
+            attachments=(Path("C:/tmp/motivation.docx"),),
+            result_asset_dir=Path("C:/tmp/result-assets/job-36"),
+        )
+
+        prompt = build_prompt(job)
+        retry_prompt = build_office_revision_retry_prompt(job)
+
+        self.assertTrue(requires_office_revision(job))
+        self.assertIn("本文の提案だけで完了してはいけません。", prompt)
+        self.assertIn("-revised.docx", prompt)
+        self.assertIn("実際に編集した", retry_prompt)
+
+    def test_office_summary_request_does_not_require_a_revision_file(self) -> None:
+        job = CodexJob(
+            job_id=37,
+            source_key="user:Uxxx",
+            request_text="添付の内容を要約してください。",
+            project=ProjectSelection("none", None, None, "未指定"),
+            recent_messages=(),
+            knowledge=(),
+            attachments=(Path("C:/tmp/report.xlsx"),),
+        )
+
+        self.assertFalse(requires_office_revision(job))
 
 
 if __name__ == "__main__":

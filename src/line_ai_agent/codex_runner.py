@@ -23,7 +23,23 @@ COMMAND_FAILURE_REPLY = "内部処理を完了できませんでした。詳細�
 AI_AGENT_TIMEOUT_REPLY = "AIエージェントの実行がタイムアウトしました。"
 AI_AGENT_EMPTY_REPLY = "AIエージェントの実行結果が空でした。"
 CODEX_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+OFFICE_DOCUMENT_SUFFIXES = {".docx", ".xlsx"}
 OFFICE_TEXT_SIDECAR_SUFFIX = ".line-office-extracted.txt"
+OFFICE_REVISION_KEYWORDS = (
+    "添削",
+    "校正",
+    "校閲",
+    "修正",
+    "訂正",
+    "推敲",
+    "書き直",
+    "書き換",
+    "リライト",
+    "ブラッシュアップ",
+    "改善",
+    "磨いて",
+    "直して",
+)
 
 
 @dataclass(frozen=True)
@@ -76,9 +92,21 @@ class CodexRunner:
         if not self._command:
             return CodexResult(build_dry_run_reply(job), True, ())
 
+        return self._run_command(job, build_prompt(job))
+
+    def run_office_revision_retry(self, job: CodexJob) -> CodexResult:
+        """Office修正成果物が未生成だった場合、成果物作成だけを明示してCodexを再実行します。"""
+        job = self._with_result_asset_dir(job)
+        if not self._command:
+            return CodexResult("修正済みOfficeファイルを生成できませんでした。", False, ())
+
+        return self._run_command(job, build_office_revision_retry_prompt(job))
+
+    def _run_command(self, job: CodexJob, prompt: str) -> CodexResult:
+        """指定プロンプトでCodex CLIを一度実行し、今回更新された成果物だけを回収します。"""
+
         workdir = job.project.project_path or self._no_project_workdir
         workdir.mkdir(parents=True, exist_ok=True)
-        prompt = build_prompt(job)
         args, output_file = self._prepare_command(job)
         env = os.environ.copy()
         env.update(
@@ -189,6 +217,19 @@ def build_prompt(job: CodexJob) -> str:
                 "",
             ]
         )
+    if requires_office_revision(job):
+        source_names = ", ".join(path.name for path in office_documents(job))
+        lines.extend(
+            [
+                "Office修正成果物の必須条件:",
+                f"今回の依頼は {source_names} の修正済みファイル返却を求めています。本文の提案だけで完了してはいけません。",
+                "元のDOCX/XLSXをコピーして実際に編集し、元と同じ拡張子の修正済みファイルをLINE送信用の成果物出力先へ保存してください。",
+                "Wordは本文を実ファイル内で修正し、Excelは対象セルの文言を修正してください。Excelの数式・書式・シート構成は保持してください。",
+                "ファイル名は末尾を -revised.docx または -revised.xlsx とし、回答前に出力先に実在することを確認してください。",
+                "ローカルパス、修正案だけの本文、または元ファイルの単なるコピーだけを成果物として返してはいけません。",
+                "",
+            ]
+        )
     if job.recent_messages:
         lines.extend(["直近の会話履歴:"])
         for item in job.recent_messages:
@@ -226,6 +267,30 @@ def build_prompt(job: CodexJob) -> str:
         )
     lines.extend(["依頼内容:", job.request_text.strip()])
     return "\n".join(lines)
+
+
+def build_office_revision_retry_prompt(job: CodexJob) -> str:
+    """Office修正の初回実行で成果物がなかったとき、ファイル生成に限定した再試行指示を作ります。"""
+    return "\n".join(
+        [
+            build_prompt(job),
+            "",
+            "重要: 前回の実行ではLINEへ返却できる修正済みOfficeファイルが出力先にありませんでした。",
+            "今回の実行では説明文だけを返さず、元ファイルを実際に編集した -revised.docx または -revised.xlsx を成果物出力先へ必ず作成してください。",
+            "出力ファイルが存在することを確認した後で、生成ファイル名だけを短く回答してください。",
+        ]
+    )
+
+
+def office_documents(job: CodexJob) -> tuple[Path, ...]:
+    """添付群から、返却対象として扱えるOffice Open XML文書だけを取り出します。"""
+    return tuple(path for path in job.attachments if path.suffix.lower() in OFFICE_DOCUMENT_SUFFIXES)
+
+
+def requires_office_revision(job: CodexJob) -> bool:
+    """Office添付に対する添削・修正依頼かを、明示的な日本語キーワードで判定します。"""
+    request = job.request_text.lower()
+    return bool(office_documents(job)) and any(keyword in request for keyword in OFFICE_REVISION_KEYWORDS)
 
 
 def build_dry_run_reply(job: CodexJob) -> str:

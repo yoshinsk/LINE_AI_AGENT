@@ -14,7 +14,7 @@ import time
 from typing import Any
 
 from .api_client import ApiClient
-from .codex_runner import CodexJob, CodexRunner
+from .codex_runner import CodexJob, CodexResult, CodexRunner, office_documents, requires_office_revision
 from .config import Settings
 from .office_text import OfficeTextExtractionError, extract_office_text
 from .projects import ProjectCatalog, is_project_list_request
@@ -95,6 +95,22 @@ class LineWorker:
                 attachments=tuple(attachments),
             )
             result = self._runner.run(codex_job)
+            if requires_office_revision(codex_job) and not _has_required_office_result(result, codex_job):
+                LOGGER.warning("job #%s did not create a required Office result asset; retrying", job_id)
+                retry_result = self._runner.run_office_revision_retry(codex_job)
+                if _has_required_office_result(retry_result, codex_job):
+                    result = CodexResult(
+                        "修正済みファイルを作成しました。LINEのダウンロードリンクから取得できます。",
+                        True,
+                        _merge_asset_paths(result.asset_paths, retry_result.asset_paths),
+                    )
+                else:
+                    LOGGER.error("job #%s still has no required Office result asset after retry", job_id)
+                    result = CodexResult(
+                        "修正済みのOfficeファイルを生成できなかったため、この依頼は完了扱いにしていません。",
+                        False,
+                        _merge_asset_paths(result.asset_paths, retry_result.asset_paths),
+                    )
             assets, upload_errors = self._upload_result_assets(job_id, result.asset_paths)
             result_text = _append_upload_errors(result.text, upload_errors)
             completion = self._client.complete(job_id, "succeeded" if result.ok else "failed", result_text, assets=assets)
@@ -208,3 +224,23 @@ def _append_upload_errors(text: str, errors: list[str]) -> str:
         return text
     detail = "\n".join(f"- {item}" for item in errors[:3])
     return text.rstrip() + "\n\n生成ファイルのLINE送信に失敗しました。\n" + detail
+
+
+def _has_required_office_result(result: CodexResult, job: CodexJob) -> bool:
+    """添付された各Office形式について、同形式の成果物が揃ったかを確認します。"""
+    required_suffixes = {path.suffix.lower() for path in office_documents(job)}
+    returned_suffixes = {path.suffix.lower() for path in result.asset_paths}
+    return required_suffixes.issubset(returned_suffixes)
+
+
+def _merge_asset_paths(*asset_groups: tuple[Path, ...]) -> tuple[Path, ...]:
+    """初回・再試行の成果物を絶対パスで重複排除し、アップロード漏れを防ぎます。"""
+    merged: list[Path] = []
+    seen: set[str] = set()
+    for paths in asset_groups:
+        for path in paths:
+            key = str(path.resolve(strict=False)).lower()
+            if key not in seen:
+                merged.append(path)
+                seen.add(key)
+    return tuple(merged)
