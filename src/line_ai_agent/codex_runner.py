@@ -174,7 +174,7 @@ class CodexRunner:
         stderr = (completed.stderr or "").strip()
         if completed.returncode != 0 and not file_output:
             detail = stderr or stdout or f"exit code {completed.returncode}"
-            return CodexResult(_clip(COMMAND_FAILURE_REPLY + "\n" + _clip(detail, 1000), self._reply_max_chars), False)
+            return CodexResult(_clip(COMMAND_FAILURE_REPLY + "\n" + _tail(detail, 1000), self._reply_max_chars), False)
 
         raw_text = (file_output or stdout or AI_AGENT_EMPTY_REPLY).strip()
         asset_paths = collect_result_asset_paths(
@@ -470,3 +470,10 @@ def _clip(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return text[: max_chars - 40].rstrip() + "\n...（長文のため省略）"
+
+
+def _tail(text: str, max_chars: int) -> str:
+    """Codex起動警告より後ろにある実際の失敗理由を残すため、標準エラーの末尾を制限します。"""
+    if len(text) <= max_chars:
+        return text
+    return "...（起動時出力を省略）\n" + text[-(max_chars - 20) :].lstrip()

@@ -13,7 +13,7 @@ import unittest
 
 from docx import Document
 
-from line_ai_agent.codex_runner import CodexJob, CodexRunner, build_office_revision_prompt, build_prompt, requires_office_revision
+from line_ai_agent.codex_runner import CodexJob, CodexRunner, _tail, build_office_revision_prompt, build_prompt, requires_office_revision
 from line_ai_agent.projects import ProjectSelection
 
 
@@ -166,6 +166,14 @@ class CodexPromptTest(unittest.TestCase):
             self.assertEqual("修正済みWord文書を作成しました。", result.text)
             self.assertEqual(1, len(result.asset_paths))
             self.assertEqual("新表記", Document(result.asset_paths[0]).paragraphs[0].text)
+
+    def test_tail_keeps_the_last_codex_error_after_startup_warnings(self) -> None:
+        text = "起動警告\n" * 400 + "ERROR: schema is invalid"
+
+        shortened = _tail(text, 120)
+
+        self.assertIn("ERROR: schema is invalid", shortened)
+        self.assertTrue(shortened.startswith("...（起動時出力を省略）"))
 
 
 if __name__ == "__main__":
