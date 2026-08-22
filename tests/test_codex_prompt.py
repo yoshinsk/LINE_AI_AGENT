@@ -6,6 +6,7 @@ Codexへ渡すプロンプトに会話履歴、検索ナレッジ、添付パス
 from __future__ import annotations
 
 from pathlib import Path
+import tempfile
 import unittest
 
 from line_ai_agent.codex_runner import CodexJob, CodexRunner, build_prompt
@@ -57,6 +58,28 @@ class CodexPromptTest(unittest.TestCase):
         self.assertLess(image_arg_index, args.index("-"))
         self.assertNotIn(str(pdf_path.resolve(strict=False)), args)
         self.assertIsNotNone(output_file)
+
+    def test_prompt_embeds_office_text_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original = root / "motivation.docx"
+            snapshot = root / "7-motivation.line-office-extracted.txt"
+            snapshot.write_text("本文: 交換留学を志望する理由です。", encoding="utf-8")
+            job = CodexJob(
+                job_id=35,
+                source_key="user:Uxxx",
+                request_text="添削してください。",
+                project=ProjectSelection("none", None, None, "未指定"),
+                recent_messages=(),
+                knowledge=(),
+                attachments=(original, snapshot),
+            )
+
+            prompt = build_prompt(job)
+
+            self.assertIn(str(original), prompt)
+            self.assertIn("本文: 交換留学を志望する理由です。", prompt)
+            self.assertIn("元ファイルを読めないことだけを理由に回答を保留しないでください。", prompt)
 
 
 if __name__ == "__main__":

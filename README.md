@@ -37,6 +37,8 @@ LINEの `file` / `image` / `video` / `audio` メッセージを受けると、�
 
 画像添付はCodex CLIの `--image` にも渡します。PDFや通常ファイルはローカル保存パスをプロンプトに渡し、Codex側が必要に応じてファイルを読み取ります。
 
+DOCXとXLSXは、ワーカーが依存パッケージなしで本文・セル値を抽出し、元ファイルと対応付けたテキストをCodexプロンプトへ直接渡します。そのため、Officeバイナリのパスだけを渡して読取不能になることはありません。抽出量は `LINE_AGENT_ATTACHMENT_TEXT_MAX_CHARS`（既定60,000文字）で制限します。旧形式のDOC/XLSは対象外のため、DOCX/XLSXまたはPDFへ変換して送信してください。マクロ付きOffice文書は従来どおり受信拒否します。
+
 Codexが処理結果としてファイルを生成する場合、ワーカーは `LINE_AGENT_RESULT_ASSET_OUTPUT_DIR` をジョブごとの成果物出力先としてCodexへ渡します。この配下の生成ファイルは、内部APIでサーバへアップロードされます。Codexが回答本文に絶対パスではなく生成ファイル名だけを返す場合も、`LINE_AGENT_RESULT_ASSET_ALLOWED_DIRS` 内で今回のジョブ実行中に更新された実体だけを探索して送信対象にします。過去の成果物を送る場合は、ジョブごとの出力先へコピーしてから生成ファイル名を回答します。
 
 サーバは生成ファイルを `LINE_AI_AGENT_PUBLIC_ASSET_DIR` 配下へ保存し、HTTPS公開URLを作ってLINEへ返します。JPEG/PNGはLINEの画像メッセージとして送信します。TXT、PDF、Office文書、CSVなど、LINE Messaging APIで任意ファイルとして直接pushできない形式は、LINE本文内のダウンロードURLとして返します。

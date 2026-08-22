@@ -70,6 +70,7 @@ class Settings:
     poll_interval_seconds: int
     worker_concurrency: int
     attachment_download_dir: Path
+    attachment_text_max_chars: int
     result_asset_output_dir: Path
     result_asset_allowed_dirs: tuple[Path, ...]
     result_asset_max_count: int
@@ -123,6 +124,7 @@ class Settings:
             poll_interval_seconds=max(1, int(values.get("LINE_AGENT_POLL_INTERVAL_SECONDS", "5"))),
             worker_concurrency=max(1, int(values.get("LINE_AGENT_WORKER_CONCURRENCY", "1"))),
             attachment_download_dir=download_dir.resolve(),
+            attachment_text_max_chars=max(1_000, min(200_000, int(values.get("LINE_AGENT_ATTACHMENT_TEXT_MAX_CHARS", "60000")))),
             result_asset_output_dir=result_asset_output_dir.resolve(),
             result_asset_allowed_dirs=tuple(path.resolve(strict=False) for path in result_asset_allowed_dirs),
             result_asset_max_count=max(1, min(10, int(values.get("LINE_AGENT_RESULT_ASSET_MAX_COUNT", "5")))),

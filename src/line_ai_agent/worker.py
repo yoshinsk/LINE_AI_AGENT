@@ -16,6 +16,7 @@ from typing import Any
 from .api_client import ApiClient
 from .codex_runner import CodexJob, CodexRunner
 from .config import Settings
+from .office_text import OfficeTextExtractionError, extract_office_text
 from .projects import ProjectCatalog, is_project_list_request
 
 
@@ -125,7 +126,16 @@ class LineWorker:
             destination_dir = self._settings.attachment_download_dir / f"job-{job_id}"
             if item.get("storage_status") == "stored":
                 destination = destination_dir / f"{attachment_id}-{file_name}"
-                saved.append(self._client.download_attachment(attachment_id, destination).resolve())
+                downloaded = self._client.download_attachment(attachment_id, destination).resolve()
+                saved.append(downloaded)
+                extracted = _write_office_text_snapshot(
+                    downloaded,
+                    destination_dir,
+                    attachment_id,
+                    self._settings.attachment_text_max_chars,
+                )
+                if extracted is not None:
+                    saved.append(extracted)
                 continue
             if item.get("storage_status") == "external":
                 provider = (item.get("metadata") or {}).get("contentProvider") or {}
@@ -174,6 +184,22 @@ def _safe_file_name(file_name: str) -> str:
     """サーバ側とは別にワーカー保存時もファイル名を安全化します。"""
     clean = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", file_name).strip(" .")
     return clean[:180] or "attachment.bin"
+
+
+def _write_office_text_snapshot(source: Path, destination_dir: Path, attachment_id: int, max_chars: int) -> Path | None:
+    """DOCX/XLSXの抽出内容をジョブ専用のテキストへ保存し、Codexプロンプトへ確実に渡せるようにします。"""
+    try:
+        text = extract_office_text(source, max_chars)
+    except OfficeTextExtractionError as exc:
+        LOGGER.warning("Office text extraction failed attachment=%s file=%s: %s", attachment_id, source.name, exc)
+        return None
+    if not text:
+        return None
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    snapshot = destination_dir / f"{attachment_id}-{source.stem}.line-office-extracted.txt"
+    snapshot.write_text(text, encoding="utf-8")
+    LOGGER.info("Office text extracted attachment=%s file=%s chars=%s", attachment_id, source.name, len(text))
+    return snapshot.resolve()
 
 
 def _append_upload_errors(text: str, errors: list[str]) -> str:

@@ -23,6 +23,7 @@ COMMAND_FAILURE_REPLY = "内部処理を完了できませんでした。詳細�
 AI_AGENT_TIMEOUT_REPLY = "AIエージェントの実行がタイムアウトしました。"
 AI_AGENT_EMPTY_REPLY = "AIエージェントの実行結果が空でした。"
 CODEX_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+OFFICE_TEXT_SIDECAR_SUFFIX = ".line-office-extracted.txt"
 
 
 @dataclass(frozen=True)
@@ -198,13 +199,31 @@ def build_prompt(job: CodexJob) -> str:
         for item in job.knowledge:
             lines.append(f"- {item.get('created_at', '')} {item.get('role', '')}: {item.get('text', '')}")
         lines.append("")
-    if job.attachments:
+    attachments = [path for path in job.attachments if not _is_office_text_sidecar(path)]
+    office_text_sidecars = [path for path in job.attachments if _is_office_text_sidecar(path)]
+    if attachments:
         lines.extend(["添付ファイル:"])
-        for path in job.attachments:
+        for path in attachments:
             lines.append(f"- {path}")
-        if any(_is_codex_image(path) for path in job.attachments):
+        if any(_is_codex_image(path) for path in attachments):
             lines.append("画像添付はCodex CLIの--imageにも渡されています。")
         lines.append("")
+    if office_text_sidecars:
+        lines.extend(["Office文書から抽出した内容:"])
+        for path in office_text_sidecars:
+            source_name = path.name.removesuffix(OFFICE_TEXT_SIDECAR_SUFFIX)
+            try:
+                extracted_text = path.read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:
+                extracted_text = ""
+            if extracted_text:
+                lines.extend([f"--- {source_name} ---", extracted_text, "--- 抽出終了 ---"])
+        lines.extend(
+            [
+                "上記の抽出内容をOffice文書の本文・セル値として読み、元ファイルを読めないことだけを理由に回答を保留しないでください。",
+                "",
+            ]
+        )
     lines.extend(["依頼内容:", job.request_text.strip()])
     return "\n".join(lines)
 
@@ -263,6 +282,11 @@ def _codex_image_args(attachments: tuple[Path, ...]) -> list[str]:
 def _is_codex_image(path: Path) -> bool:
     """Codex CLIが画像入力として受け取れる拡張子かを判定します。"""
     return path.suffix.lower() in CODEX_IMAGE_SUFFIXES
+
+
+def _is_office_text_sidecar(path: Path) -> bool:
+    """ワーカーが作成したOffice抽出テキストかをファイル名の固定接尾辞で判定します。"""
+    return path.name.endswith(OFFICE_TEXT_SIDECAR_SUFFIX)
 
 
 def _insert_codex_image_args(parts: list[str], image_args: list[str]) -> list[str]:
