@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 import unittest
+import zipfile
 
 import fitz
 from docx import Document
@@ -86,6 +87,44 @@ class OfficeRevisionTest(unittest.TestCase):
             self.assertEqual("第一志望", revised["A1"].value)
             self.assertTrue(revised["A1"].font.bold)
             self.assertEqual("=SUM(1,2)", revised["B1"].value)
+
+    def test_revises_xlsx_without_removing_unknown_extension_xml(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "extended.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.title = "入力"
+            sheet["A1"] = "旧表記"
+            workbook.save(source)
+            _add_xlsx_extension(source)
+
+            results = apply_office_revision_plan(
+                {
+                    "summary": "修正済みExcel文書を作成しました。",
+                    "files": [
+                        {
+                            "source_file": source.name,
+                            "edits": [
+                                {
+                                    "kind": "excel_cell",
+                                    "sheet": "入力",
+                                    "cell": "A1",
+                                    "expected": "旧表記",
+                                    "replacement": "新表記",
+                                }
+                            ],
+                        }
+                    ],
+                },
+                (source,),
+                root / "output",
+            )
+
+            with zipfile.ZipFile(results[0]) as archive:
+                worksheet_xml = archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
+            self.assertIn("urn:line-ai-agent:test", worksheet_xml)
+            self.assertIn("keep-this-extension", worksheet_xml)
 
     def test_rejects_plan_that_does_not_modify_the_source(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -169,6 +208,21 @@ class OfficeRevisionTest(unittest.TestCase):
                 revised.close()
             self.assertIn("Revised", page_text)
             self.assertNotIn("Original", page_text)
+
+
+def _add_xlsx_extension(path: Path) -> None:
+    """openpyxlが警告する未知の拡張要素を模擬し、直接更新後も保持されることを確認します。"""
+    with zipfile.ZipFile(path) as input_archive:
+        members = {info.filename: (info, input_archive.read(info.filename)) for info in input_archive.infolist()}
+    info, worksheet = members["xl/worksheets/sheet1.xml"]
+    extended = worksheet.decode("utf-8").replace(
+        "</worksheet>",
+        '<extLst><ext uri="urn:line-ai-agent:test"><x:payload xmlns:x="urn:line-ai-agent:test">keep-this-extension</x:payload></ext></extLst></worksheet>',
+    ).encode("utf-8")
+    members["xl/worksheets/sheet1.xml"] = (info, extended)
+    with zipfile.ZipFile(path, "w") as output_archive:
+        for member_info, binary in members.values():
+            output_archive.writestr(member_info, binary)
 
 
 if __name__ == "__main__":

@@ -8,14 +8,16 @@ from __future__ import annotations
 from collections.abc import Iterable
 from pathlib import Path
 import os
+import posixpath
 from typing import Any
+import xml.etree.ElementTree as ElementTree
+import zipfile
 
 import fitz
 from docx import Document
 from docx.document import Document as WordDocument
 from docx.table import _Cell, Table
 from docx.text.paragraph import Paragraph
-from openpyxl import load_workbook
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 
@@ -25,6 +27,9 @@ class OfficeRevisionError(ValueError):
 
 
 REVISION_DOCUMENT_SUFFIXES = {".docx", ".xlsx", ".pptx", ".pdf"}
+SPREADSHEET_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+OFFICE_RELATIONSHIPS_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+PACKAGE_RELATIONSHIPS_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 
 
 def apply_office_revision_plan(plan: dict[str, Any], sources: tuple[Path, ...], output_dir: Path) -> tuple[Path, ...]:
@@ -108,26 +113,149 @@ def _revise_docx(source: Path, destination: Path, edits: list[Any]) -> int:
 
 
 def _revise_xlsx(source: Path, destination: Path, edits: list[Any]) -> int:
-    """Excelの指定セルだけを置換し、数式・書式・シート構成を保持したまま保存します。"""
-    workbook = load_workbook(source, data_only=False, keep_vba=False)
-    change_count = 0
-    for item in edits:
-        change = _excel_cell_change(item)
-        if change is None:
-            continue
-        sheet_name, coordinate, expected, replacement = change
-        if sheet_name not in workbook.sheetnames:
-            continue
-        cell = workbook[sheet_name][coordinate]
-        if cell.data_type == "f" or (isinstance(cell.value, str) and cell.value.startswith("=")):
-            continue
-        if not isinstance(cell.value, str) or cell.value != expected or cell.value == replacement:
-            continue
-        cell.value = replacement
-        change_count += 1
-    if change_count:
-        workbook.save(destination)
-    return change_count
+    """Excelの対象セルXMLだけを置換し、Open XML内の数式・検証・拡張要素をそのまま保持します。"""
+    changes = [change for item in edits if (change := _excel_cell_change(item)) is not None]
+    if not changes:
+        raise OfficeRevisionError("Excel用のセル置換がありません。")
+
+    try:
+        with zipfile.ZipFile(source) as archive:
+            members = {info.filename: archive.read(info.filename) for info in archive.infolist()}
+            sheet_members = _xlsx_sheet_members(members)
+            shared_root, shared_values, shared_member, has_shared_strings = _xlsx_shared_strings(members)
+            edited_sheets: dict[str, ElementTree.Element] = {}
+            change_count = 0
+            for sheet_name, coordinate, expected, replacement in changes:
+                member_name = sheet_members.get(sheet_name)
+                if member_name is None:
+                    continue
+                root = edited_sheets.get(member_name)
+                if root is None:
+                    raw = members.get(member_name)
+                    if raw is None:
+                        continue
+                    root = ElementTree.fromstring(raw)
+                    edited_sheets[member_name] = root
+                cell = root.find(f".//{{{SPREADSHEET_NS}}}c[@r='{coordinate}']")
+                if cell is None or cell.find(f"{{{SPREADSHEET_NS}}}f") is not None:
+                    continue
+                actual = _xlsx_cell_value(cell, shared_values)
+                if actual != expected or actual == replacement:
+                    continue
+                if has_shared_strings:
+                    shared_index = _append_xlsx_shared_string(shared_root, shared_values, replacement)
+                    _set_xlsx_cell_shared_string(cell, shared_index)
+                else:
+                    _set_xlsx_cell_inline_string(cell, replacement)
+                change_count += 1
+            if not change_count:
+                return 0
+            for member_name, root in edited_sheets.items():
+                members[member_name] = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+            if has_shared_strings:
+                members[shared_member] = ElementTree.tostring(shared_root, encoding="utf-8", xml_declaration=True)
+            _write_xlsx_archive(source, destination, members)
+            return change_count
+    except (ElementTree.ParseError, KeyError, OSError, ValueError, zipfile.BadZipFile) as exc:
+        raise OfficeRevisionError(f"XLSXを安全に更新できませんでした: {exc}") from exc
+
+
+def _xlsx_sheet_members(members: dict[str, bytes]) -> dict[str, str]:
+    """workbook.xmlと関連定義から、シート名ごとのワークシートXMLを解決します。"""
+    workbook_raw = members.get("xl/workbook.xml")
+    relationships_raw = members.get("xl/_rels/workbook.xml.rels")
+    if workbook_raw is None or relationships_raw is None:
+        raise ValueError("XLSXのworkbook関連定義がありません。")
+    workbook = ElementTree.fromstring(workbook_raw)
+    relationships = ElementTree.fromstring(relationships_raw)
+    targets = {
+        item.attrib.get("Id", ""): item.attrib.get("Target", "")
+        for item in relationships.findall(f"{{{PACKAGE_RELATIONSHIPS_NS}}}Relationship")
+    }
+    sheets: dict[str, str] = {}
+    for item in workbook.findall(f".//{{{SPREADSHEET_NS}}}sheet"):
+        sheet_name = item.attrib.get("name", "")
+        relation_id = item.attrib.get(f"{{{OFFICE_RELATIONSHIPS_NS}}}id", "")
+        target = targets.get(relation_id, "")
+        member_name = _xlsx_member_name(target)
+        if sheet_name and member_name in members:
+            sheets[sheet_name] = member_name
+    return sheets
+
+
+def _xlsx_member_name(target: str) -> str:
+    """workbook関連の相対パスを、XLSXコンテナ内のxl配下パスへ正規化します。"""
+    if target.startswith("/"):
+        return target.lstrip("/")
+    return posixpath.normpath(posixpath.join("xl", target))
+
+
+def _xlsx_shared_strings(members: dict[str, bytes]) -> tuple[ElementTree.Element, list[str], str, bool]:
+    """共有文字列を読み、元の文字列を変更せず新規文字列を追加できる状態にします。"""
+    member_name = "xl/sharedStrings.xml"
+    raw = members.get(member_name)
+    if raw is None:
+        root = ElementTree.Element(f"{{{SPREADSHEET_NS}}}sst", {"count": "0", "uniqueCount": "0"})
+        return root, [], member_name, False
+    root = ElementTree.fromstring(raw)
+    values = ["".join(text.text or "" for text in item.iter(f"{{{SPREADSHEET_NS}}}t")) for item in root.findall(f"{{{SPREADSHEET_NS}}}si")]
+    return root, values, member_name, True
+
+
+def _xlsx_cell_value(cell: ElementTree.Element, shared_values: list[str]) -> str:
+    """対象セルの表示文字列を取得し、編集計画のexpectedと厳密比較できるようにします。"""
+    cell_type = cell.attrib.get("t", "")
+    if cell_type == "s":
+        value = cell.findtext(f"{{{SPREADSHEET_NS}}}v", default="")
+        try:
+            return shared_values[int(value)]
+        except (IndexError, ValueError):
+            return ""
+    if cell_type == "inlineStr":
+        return "".join(text.text or "" for text in cell.iter(f"{{{SPREADSHEET_NS}}}t"))
+    return cell.findtext(f"{{{SPREADSHEET_NS}}}v", default="")
+
+
+def _append_xlsx_shared_string(root: ElementTree.Element, values: list[str], value: str) -> int:
+    """既存参照へ影響しない新しい共有文字列を追加し、そのインデックスを返します。"""
+    index = len(values)
+    item = ElementTree.SubElement(root, f"{{{SPREADSHEET_NS}}}si")
+    text = ElementTree.SubElement(item, f"{{{SPREADSHEET_NS}}}t")
+    if value.startswith(" ") or value.endswith(" "):
+        text.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+    text.text = value
+    values.append(value)
+    root.set("count", str(max(0, int(root.attrib.get("count", "0"))) + 1))
+    root.set("uniqueCount", str(len(values)))
+    return index
+
+
+def _set_xlsx_cell_shared_string(cell: ElementTree.Element, shared_index: int) -> None:
+    """セルの値要素だけを共有文字列参照へ置き換え、style・検証・コメントなどの属性を残します。"""
+    cell.set("t", "s")
+    for child in list(cell):
+        cell.remove(child)
+    value = ElementTree.SubElement(cell, f"{{{SPREADSHEET_NS}}}v")
+    value.text = str(shared_index)
+
+
+def _set_xlsx_cell_inline_string(cell: ElementTree.Element, replacement: str) -> None:
+    """共有文字列テーブルがないブックでは、対象セルだけをinline文字列へ変更して関係定義を増やさないようにします。"""
+    cell.set("t", "inlineStr")
+    for child in list(cell):
+        cell.remove(child)
+    inline = ElementTree.SubElement(cell, f"{{{SPREADSHEET_NS}}}is")
+    text = ElementTree.SubElement(inline, f"{{{SPREADSHEET_NS}}}t")
+    if replacement.startswith(" ") or replacement.endswith(" "):
+        text.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+    text.text = replacement
+
+
+def _write_xlsx_archive(source: Path, destination: Path, members: dict[str, bytes]) -> None:
+    """変更対象XML以外は元のZipInfoとバイト列を維持し、Office拡張要素を失わずに保存します。"""
+    with zipfile.ZipFile(source) as input_archive, zipfile.ZipFile(destination, "w") as output_archive:
+        for info in input_archive.infolist():
+            output_archive.writestr(info, members[info.filename])
 
 
 def _revise_pptx(source: Path, destination: Path, edits: list[Any]) -> int:
