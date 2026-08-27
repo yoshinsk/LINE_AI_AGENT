@@ -220,6 +220,14 @@ python -m line_ai_agent --env .env serve
 
 `ensure-worker.ps1` は停止時だけ起動します。`install-worker-watchdog.ps1` はWindowsタスクスケジューラに1分間隔の監視タスクを登録します。
 
+ジョブ処理とLINE配信の確認:
+
+```powershell
+Get-Content -Encoding UTF8 .\.state\logs\worker.err.log -Tail 80
+```
+
+LINE配信が受理された場合は `job #123 delivery accepted status=200 attempts=1` のように記録されます。配信未受理の場合は `LINE delivery was not accepted` としてエラーログへ記録されます。
+
 ## 検証
 
 ```powershell

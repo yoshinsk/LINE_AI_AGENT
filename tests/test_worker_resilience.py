@@ -77,6 +77,12 @@ class WorkerResilienceTest(unittest.TestCase):
         self.assertEqual({"ok": True, "delivery": {"accepted": True}}, completion)
         self.assertEqual(2, client.complete_calls)
 
+    def test_logs_accepted_delivery(self) -> None:
+        with self.assertLogs("line_ai_agent.worker", level="INFO") as captured:
+            LineWorker._log_delivery_result(42, {"delivery": {"accepted": True, "status_code": 200, "attempt_count": 1}})
+
+        self.assertIn("job #42 delivery accepted status=200 attempts=1", captured.output[0])
+
 
 def _settings() -> SimpleNamespace:
     """ワーカー耐性テストに必要な設定だけを持つオブジェクトを返します。"""

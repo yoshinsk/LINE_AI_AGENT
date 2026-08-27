@@ -173,6 +173,14 @@ class LineWorker:
     def _log_delivery_result(job_id: int, completion: dict[str, Any]) -> None:
         """内部APIがLINE配信を未受理と返した場合、成功ログに埋もれないよう明示します。"""
         delivery = completion.get("delivery") if isinstance(completion, dict) else None
+        if isinstance(delivery, dict) and delivery.get("accepted") is True:
+            LOGGER.info(
+                "job #%s delivery accepted status=%s attempts=%s",
+                job_id,
+                delivery.get("status_code", "unknown"),
+                delivery.get("attempt_count", "unknown"),
+            )
+            return
         if isinstance(delivery, dict) and delivery.get("accepted") is False:
             LOGGER.error(
                 "job #%s LINE delivery was not accepted status=%s attempts=%s",
