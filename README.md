@@ -211,6 +211,15 @@ python -m line_ai_agent --env .env serve
 .\scripts\stop-worker.ps1
 ```
 
+停止時の自動復旧:
+
+```powershell
+.\scripts\ensure-worker.ps1
+.\scripts\install-worker-watchdog.ps1
+```
+
+`ensure-worker.ps1` は停止時だけ起動します。`install-worker-watchdog.ps1` はWindowsタスクスケジューラに1分間隔の監視タスクを登録します。
+
 ## 検証
 
 ```powershell

@@ -21,6 +21,7 @@ from .projects import ProjectCatalog, is_project_list_request
 
 
 LOGGER = logging.getLogger(__name__)
+_COMPLETE_RETRY_DELAYS_SECONDS = (2.0, 5.0, 10.0)
 
 
 class LineWorker:
@@ -40,26 +41,27 @@ class LineWorker:
         if not job_payload:
             return False
 
-        self._process_claimed_response(response)
-        return True
+        return self._process_claimed_response(response)
 
     def serve_forever(self) -> None:
         """停止要求までポーリングを続けます。"""
         LOGGER.info("worker started id=%s concurrency=%s", self._client.worker_id, self._settings.worker_concurrency)
-        self._client.heartbeat("started", {"concurrency": self._settings.worker_concurrency})
+        self._send_heartbeat("started", {"concurrency": self._settings.worker_concurrency})
         active: set[Future[bool]] = set()
         with ThreadPoolExecutor(max_workers=self._settings.worker_concurrency, thread_name_prefix="line-ai-agent") as executor:
             while not self._stop_event.is_set():
-                active = {future for future in active if not future.done()}
+                active = self._collect_active_jobs(active)
                 did_claim = False
                 while len(active) < self._settings.worker_concurrency:
-                    response = self._client.claim(self._settings.codex_command_timeout_seconds + 120)
+                    response = self._claim_next_job(self._settings.codex_command_timeout_seconds + 120)
+                    if response is None:
+                        break
                     if not response.get("job"):
                         break
                     active.add(executor.submit(self._process_claimed_response, response))
                     did_claim = True
 
-                self._client.heartbeat("running" if active else "idle", {"active_jobs": len(active)})
+                self._send_heartbeat("running" if active else "idle", {"active_jobs": len(active)})
                 if not did_claim:
                     self._stop_event.wait(self._settings.poll_interval_seconds)
 
@@ -79,9 +81,8 @@ class LineWorker:
             request_text = str(job_payload.get("request_text", ""))
             if is_project_list_request(request_text):
                 result_text = self._projects.format_project_list()
-                completion = self._client.complete(job_id, "succeeded", result_text)
-                self._log_delivery_result(job_id, completion)
-                return True
+                completion = self._complete_job(job_id, "succeeded", result_text)
+                return completion is not None
 
             project = self._projects.select(job_payload.get("project_ref"))
             attachments = self._download_attachments(job_id, response.get("attachments") or [])
@@ -97,13 +98,76 @@ class LineWorker:
             result = self._runner.run_office_revision(codex_job) if requires_office_revision(codex_job) else self._runner.run(codex_job)
             assets, upload_errors = self._upload_result_assets(job_id, result.asset_paths)
             result_text = _append_upload_errors(result.text, upload_errors)
-            completion = self._client.complete(job_id, "succeeded" if result.ok else "failed", result_text, assets=assets)
-            self._log_delivery_result(job_id, completion)
-            return True
+            completion = self._complete_job(job_id, "succeeded" if result.ok else "failed", result_text, assets=assets)
+            return completion is not None
         except Exception as exc:
             LOGGER.exception("job #%s failed", job_id)
-            self._client.complete(job_id, "failed", "内部処理を完了できませんでした。", str(exc))
-            return True
+            completion = self._complete_job(job_id, "failed", "内部処理を完了できませんでした。", str(exc))
+            return completion is not None
+
+    def _collect_active_jobs(self, active: set[Future[bool]]) -> set[Future[bool]]:
+        """完了済みFutureの例外をログ化し、処理中Futureだけを残します。"""
+        running: set[Future[bool]] = set()
+        for future in active:
+            if not future.done():
+                running.add(future)
+                continue
+            try:
+                future.result()
+            except Exception:
+                LOGGER.exception("job worker task crashed")
+        return running
+
+    def _claim_next_job(self, lease_seconds: int) -> dict[str, Any] | None:
+        """内部APIの一時障害でワーカー全体が停止しないようclaim失敗を吸収します。"""
+        try:
+            return self._client.claim(lease_seconds)
+        except Exception:
+            LOGGER.exception(
+                "claim failed; retrying after %s seconds",
+                self._settings.poll_interval_seconds,
+            )
+            return None
+
+    def _send_heartbeat(self, status_text: str, metadata: dict[str, Any]) -> None:
+        """heartbeat失敗をログに残し、常駐ループは継続します。"""
+        try:
+            self._client.heartbeat(status_text, metadata)
+        except Exception:
+            LOGGER.exception(
+                "heartbeat failed status=%s; retrying after %s seconds",
+                status_text,
+                self._settings.poll_interval_seconds,
+            )
+
+    def _complete_job(
+        self,
+        job_id: int,
+        status: str,
+        result_text: str,
+        error_text: str = "",
+        assets: list[dict] | None = None,
+    ) -> dict[str, Any] | None:
+        """completeの一時障害を短く再試行し、失敗してもワーカーを落としません。"""
+        for attempt, delay in enumerate((*_COMPLETE_RETRY_DELAYS_SECONDS, None), start=1):
+            try:
+                completion = self._client.complete(job_id, status, result_text, error_text, assets)
+                self._log_delivery_result(job_id, completion)
+                return completion
+            except Exception:
+                if delay is None:
+                    LOGGER.exception("job #%s completion failed after %s attempts", job_id, attempt)
+                    return None
+                LOGGER.warning(
+                    "job #%s completion failed attempt=%s; retrying in %.1f seconds",
+                    job_id,
+                    attempt,
+                    delay,
+                    exc_info=True,
+                )
+                if self._stop_event.wait(delay):
+                    return None
+        return None
 
     @staticmethod
     def _log_delivery_result(job_id: int, completion: dict[str, Any]) -> None:
