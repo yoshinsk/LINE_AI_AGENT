@@ -1,5 +1,5 @@
-# <PROJECT_ROOT>\scripts\install-worker-watchdog.ps1
-# Task Schedulerへensure-worker.ps1の1分間隔監視タスクを登録します。
+# File: C:\Users\Yoshi\Documents\GitHub\LINE_AI_AGENT\scripts\install-worker-watchdog.ps1
+# Summary: Task Schedulerへensure-worker.ps1の非表示ラッパーを1分間隔で登録します。
 
 param(
     [string]$TaskName = "LINE_AI_AGENT_Worker_Watchdog",
@@ -8,11 +8,19 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$EnsureScript = Join-Path $PSScriptRoot "ensure-worker.ps1"
-$PowerShellExe = Join-Path $PSHOME "powershell.exe"
-$argument = "-NoProfile -ExecutionPolicy Bypass -File `"$EnsureScript`" -EnvFile `"$EnvFile`" -LogLevel `"$LogLevel`""
+$ProjectRoot = Split-Path -Parent $PSScriptRoot
+$HiddenRunner = Join-Path $PSScriptRoot "ensure-worker-hidden.py"
+$PythonExe = (Get-Command python.exe -ErrorAction SilentlyContinue).Source
+$PythonwExe = if ($PythonExe) { Join-Path (Split-Path -Parent $PythonExe) "pythonw.exe" } else { "pythonw.exe" }
 
-$action = New-ScheduledTaskAction -Execute $PowerShellExe -Argument $argument
+# Windows Terminalが既定ターミナルの場合、powershell.exe直起動では一瞬ウィンドウが出るためGUIサブシステムのpythonw.exeを使います。
+if (-not (Get-Command $PythonwExe -ErrorAction SilentlyContinue)) {
+    throw "pythonw.exe was not found. Install Python or ensure pythonw.exe is on PATH."
+}
+
+$argument = "`"$HiddenRunner`" --env-file `"$EnvFile`" --log-level `"$LogLevel`""
+
+$action = New-ScheduledTaskAction -Execute $PythonwExe -Argument $argument -WorkingDirectory $ProjectRoot
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days 3650)
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
 

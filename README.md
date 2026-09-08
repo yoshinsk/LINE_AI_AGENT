@@ -220,6 +220,15 @@ python -m line_ai_agent --env .env serve
 
 `ensure-worker.ps1` は停止時だけ起動します。`install-worker-watchdog.ps1` はWindowsタスクスケジューラに1分間隔の監視タスクを登録します。
 
+Windows 11で既定のターミナルがWindows Terminalの場合、タスクスケジューラから `powershell.exe` を直接起動すると、`-WindowStyle Hidden` を指定しても短時間コンソールウィンドウが表示されることがあります。このため、監視タスクは `pythonw.exe` で `scripts\ensure-worker-hidden.py` を起動し、そこから `ensure-worker.ps1` をコンソールなしで実行します。監視機能は維持したまま、毎分の入力妨害を避ける構成です。
+
+登録済みタスクの確認:
+
+```powershell
+Get-ScheduledTaskInfo -TaskName "LINE_AI_AGENT_Worker_Watchdog"
+(Get-ScheduledTask -TaskName "LINE_AI_AGENT_Worker_Watchdog").Actions
+```
+
 ジョブ処理とLINE配信の確認:
 
 ```powershell
