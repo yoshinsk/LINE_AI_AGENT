@@ -10,9 +10,25 @@ import base64
 import hashlib
 import json
 import mimetypes
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+
+
+TRANSIENT_HTTP_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
+
+
+class InternalApiError(RuntimeError):
+    """公開サーバの内部API通信失敗を、再試行可否付きで表します。"""
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+    @property
+    def is_transient(self) -> bool:
+        """通信断と一時的なHTTP障害だけを、ワーカーの待機再試行対象として扱います。"""
+        return self.status_code is None or self.status_code in TRANSIENT_HTTP_STATUS_CODES
 
 
 class ApiClient:
@@ -91,8 +107,13 @@ class ApiClient:
             headers={"X-Line-AI-Agent-Worker-Token": self._worker_token},
             method="GET",
         )
-        with urlopen(request, timeout=120) as response:
-            destination.write_bytes(response.read())
+        try:
+            with urlopen(request, timeout=120) as response:
+                destination.write_bytes(response.read())
+        except HTTPError as exc:
+            raise _http_error(exc) from exc
+        except (TimeoutError, URLError) as exc:
+            raise InternalApiError(f"internal API network error: {exc}") from exc
         return destination
 
     def _post(self, action: str, payload: dict, timeout: int = 60) -> dict:
@@ -111,11 +132,18 @@ class ApiClient:
             with urlopen(request, timeout=timeout) as response:
                 raw = response.read().decode("utf-8", errors="replace")
         except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"internal API error {exc.code}: {detail}") from exc
+            raise _http_error(exc) from exc
+        except (TimeoutError, URLError) as exc:
+            raise InternalApiError(f"internal API network error: {exc}") from exc
         decoded = json.loads(raw or "{}")
         if not isinstance(decoded, dict):
             raise RuntimeError("internal API returned non-object JSON")
         if decoded.get("ok") is False:
             raise RuntimeError(f"internal API rejected request: {decoded}")
         return decoded
+
+
+def _http_error(exc: HTTPError) -> InternalApiError:
+    """HTTPエラー本文を診断用に保持しつつ、呼出側が状態コードで再試行を判断できるようにします。"""
+    detail = exc.read().decode("utf-8", errors="replace").strip()
+    return InternalApiError(f"internal API error {exc.code}: {detail}", status_code=exc.code)

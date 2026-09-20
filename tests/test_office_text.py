@@ -10,12 +10,13 @@ import shutil
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 import zipfile
 
 import fitz
 
 from line_ai_agent.office_text import extract_office_text
-from line_ai_agent.worker import LineWorker
+from line_ai_agent.worker import AttachmentProcessingError, LineWorker, _extract_video_frames
 
 
 WORD_DOCUMENT_XML = """<?xml version="1.0" encoding="UTF-8"?>
@@ -155,6 +156,32 @@ class OfficeTextTest(unittest.TestCase):
             self.assertEqual(".docx", paths[0].suffix)
             self.assertTrue(paths[1].name.endswith(".line-office-extracted.txt"))
             self.assertIn("志望動機", paths[1].read_text(encoding="utf-8"))
+
+    def test_worker_rejects_external_attachment_without_content_url(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = SimpleNamespace(attachment_download_dir=Path(temp_dir), attachment_text_max_chars=10_000)
+            worker = LineWorker(settings, _CopyingAttachmentClient(Path(temp_dir) / "unused.docx"), None, None)
+
+            with self.assertRaises(AttachmentProcessingError):
+                worker._download_attachments(42, [{"id": 7, "file_name": "missing.jpg", "storage_status": "external", "metadata": {}}])
+
+    def test_video_frames_are_saved_for_image_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "clip.mp4"
+            source.write_bytes(b"video")
+
+            def fake_ffmpeg(command: list[str], **_: object) -> SimpleNamespace:
+                output = Path(command[-1])
+                output.parent.mkdir(parents=True, exist_ok=True)
+                Path(str(output).replace("%02d", "01")).write_bytes(b"jpeg")
+                return SimpleNamespace(returncode=0)
+
+            with patch("line_ai_agent.worker.shutil.which", return_value="ffmpeg.exe"), patch("line_ai_agent.worker.subprocess.run", side_effect=fake_ffmpeg):
+                frames = _extract_video_frames(42, 7, source, root)
+
+            self.assertEqual(1, len(frames))
+            self.assertEqual(".jpg", frames[0].suffix)
 
 def _write_docx(path: Path, document_xml: str = WORD_DOCUMENT_XML) -> None:
     """最小のDOCXコンテナを作り、抽出処理を実ファイル同様にテストします。"""

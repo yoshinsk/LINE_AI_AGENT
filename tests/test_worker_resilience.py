@@ -6,8 +6,10 @@ r"""<PROJECT_ROOT>\tests\test_worker_resilience.py
 from __future__ import annotations
 
 from types import SimpleNamespace
+import time
 import unittest
 
+from line_ai_agent.api_client import InternalApiError
 import line_ai_agent.worker as worker_module
 from line_ai_agent.worker import LineWorker
 
@@ -46,6 +48,15 @@ class _FlakyCompleteClient:
         return {"ok": True, "delivery": {"accepted": True}}
 
 
+class _TransientFailingClient:
+    """HTTP 502を再現し、スタックトレースなしのバックオフを確認します。"""
+
+    worker_id = "test-worker"
+
+    def claim(self, lease_seconds: int) -> dict:
+        raise InternalApiError("internal API error 502", status_code=502)
+
+
 class WorkerResilienceTest(unittest.TestCase):
     """一時的な内部API障害をプロセス停止へ波及させないことを確認します。"""
 
@@ -62,6 +73,17 @@ class WorkerResilienceTest(unittest.TestCase):
 
         with self.assertLogs("line_ai_agent.worker", level="ERROR"):
             worker._send_heartbeat("idle", {"active_jobs": 0})
+
+    def test_transient_claim_uses_warning_and_schedules_backoff(self) -> None:
+        worker = LineWorker(_settings(), _TransientFailingClient(), None, None)
+
+        with self.assertLogs("line_ai_agent.worker", level="WARNING") as captured:
+            response = worker._claim_next_job(60)
+
+        self.assertIsNone(response)
+        self.assertIn("status=502", captured.output[0])
+        self.assertNotIn("Traceback", "\n".join(captured.output))
+        self.assertGreater(worker._api_retry_deadline, time.monotonic())
 
     def test_complete_retries_transient_failure(self) -> None:
         client = _FlakyCompleteClient()

@@ -9,11 +9,13 @@ from pathlib import Path
 from concurrent.futures import Future, ThreadPoolExecutor
 import logging
 import re
+import shutil
+import subprocess
 import threading
 import time
 from typing import Any
 
-from .api_client import ApiClient
+from .api_client import ApiClient, InternalApiError
 from .codex_runner import CodexJob, CodexRunner, requires_office_revision
 from .config import Settings
 from .office_text import OfficeTextExtractionError, extract_office_text
@@ -22,6 +24,13 @@ from .projects import ProjectCatalog, is_project_list_request
 
 LOGGER = logging.getLogger(__name__)
 _COMPLETE_RETRY_DELAYS_SECONDS = (2.0, 5.0, 10.0)
+_API_RETRY_MAX_SECONDS = 60.0
+_VIDEO_SUFFIXES = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm"}
+_VIDEO_MAX_FRAMES = 4
+
+
+class AttachmentProcessingError(RuntimeError):
+    """添付をCodexへ渡せる状態にできなかったことを、利用者へ明示するための例外です。"""
 
 
 class LineWorker:
@@ -33,6 +42,8 @@ class LineWorker:
         self._runner = runner
         self._projects = projects
         self._stop_event = threading.Event()
+        self._api_retry_deadline = 0.0
+        self._api_retry_delay_seconds = 0.0
 
     def run_once(self) -> bool:
         """ジョブを1件claimして処理します。ジョブがなければFalseを返します。"""
@@ -50,6 +61,8 @@ class LineWorker:
         active: set[Future[bool]] = set()
         with ThreadPoolExecutor(max_workers=self._settings.worker_concurrency, thread_name_prefix="line-ai-agent") as executor:
             while not self._stop_event.is_set():
+                if self._wait_for_api_retry():
+                    continue
                 active = self._collect_active_jobs(active)
                 did_claim = False
                 while len(active) < self._settings.worker_concurrency:
@@ -61,7 +74,12 @@ class LineWorker:
                     active.add(executor.submit(self._process_claimed_response, response))
                     did_claim = True
 
+                # claimの通信障害直後にheartbeatを重ねて送ると、障害時に同じAPIを余計に圧迫するため待機へ移ります。
+                if self._api_retry_is_scheduled():
+                    continue
                 self._send_heartbeat("running" if active else "idle", {"active_jobs": len(active)})
+                if self._api_retry_is_scheduled():
+                    continue
                 if not did_claim:
                     self._stop_event.wait(self._settings.poll_interval_seconds)
 
@@ -100,6 +118,10 @@ class LineWorker:
             result_text = _append_upload_errors(result.text, upload_errors)
             completion = self._complete_job(job_id, "succeeded" if result.ok else "failed", result_text, assets=assets)
             return completion is not None
+        except AttachmentProcessingError as exc:
+            LOGGER.warning("job #%s attachment processing failed: %s", job_id, exc)
+            completion = self._complete_job(job_id, "failed", f"添付ファイルを処理できませんでした。{exc}", str(exc))
+            return completion is not None
         except Exception as exc:
             LOGGER.exception("job #%s failed", job_id)
             completion = self._complete_job(job_id, "failed", "内部処理を完了できませんでした。", str(exc))
@@ -121,24 +143,30 @@ class LineWorker:
     def _claim_next_job(self, lease_seconds: int) -> dict[str, Any] | None:
         """内部APIの一時障害でワーカー全体が停止しないようclaim失敗を吸収します。"""
         try:
-            return self._client.claim(lease_seconds)
-        except Exception:
-            LOGGER.exception(
-                "claim failed; retrying after %s seconds",
-                self._settings.poll_interval_seconds,
-            )
+            response = self._client.claim(lease_seconds)
+        except InternalApiError as exc:
+            self._schedule_api_retry("claim", exc)
             return None
+        except Exception:
+            LOGGER.exception("claim failed; scheduling retry")
+            self._schedule_api_retry("claim", None)
+            return None
+        self._clear_api_retry()
+        return response
 
-    def _send_heartbeat(self, status_text: str, metadata: dict[str, Any]) -> None:
+    def _send_heartbeat(self, status_text: str, metadata: dict[str, Any]) -> bool:
         """heartbeat失敗をログに残し、常駐ループは継続します。"""
         try:
             self._client.heartbeat(status_text, metadata)
+        except InternalApiError as exc:
+            self._schedule_api_retry(f"heartbeat status={status_text}", exc)
+            return False
         except Exception:
-            LOGGER.exception(
-                "heartbeat failed status=%s; retrying after %s seconds",
-                status_text,
-                self._settings.poll_interval_seconds,
-            )
+            LOGGER.exception("heartbeat failed status=%s; scheduling retry", status_text)
+            self._schedule_api_retry(f"heartbeat status={status_text}", None)
+            return False
+        self._clear_api_retry()
+        return True
 
     def _complete_job(
         self,
@@ -154,6 +182,22 @@ class LineWorker:
                 completion = self._client.complete(job_id, status, result_text, error_text, assets)
                 self._log_delivery_result(job_id, completion)
                 return completion
+            except InternalApiError as exc:
+                if not exc.is_transient:
+                    LOGGER.error("job #%s completion was rejected status=%s; not retrying", job_id, exc.status_code)
+                    return None
+                if delay is None:
+                    LOGGER.error("job #%s completion failed after %s attempts status=%s", job_id, attempt, exc.status_code)
+                    return None
+                LOGGER.warning(
+                    "job #%s completion temporarily unavailable attempt=%s status=%s; retrying in %.1f seconds",
+                    job_id,
+                    attempt,
+                    exc.status_code,
+                    delay,
+                )
+                if self._stop_event.wait(delay):
+                    return None
             except Exception:
                 if delay is None:
                     LOGGER.exception("job #%s completion failed after %s attempts", job_id, attempt)
@@ -168,6 +212,34 @@ class LineWorker:
                 if self._stop_event.wait(delay):
                     return None
         return None
+
+    def _schedule_api_retry(self, operation: str, exc: InternalApiError | None) -> None:
+        """内部API障害を指数バックオフにし、接続先とログを不要に圧迫しないようにします。"""
+        delay = self._api_retry_delay_seconds or float(self._settings.poll_interval_seconds)
+        status = f" status={exc.status_code}" if exc is not None and exc.status_code is not None else ""
+        if exc is not None and not exc.is_transient:
+            LOGGER.error("internal API %s rejected%s; retrying in %.1f seconds", operation, status, delay)
+        else:
+            LOGGER.warning("internal API %s temporarily unavailable%s; retrying in %.1f seconds", operation, status, delay)
+        self._api_retry_deadline = max(self._api_retry_deadline, time.monotonic() + delay)
+        self._api_retry_delay_seconds = min(delay * 2.0, _API_RETRY_MAX_SECONDS)
+
+    def _clear_api_retry(self) -> None:
+        """内部API応答を受け取れた時点で、次回障害を短い初期待機から再開します。"""
+        self._api_retry_deadline = 0.0
+        self._api_retry_delay_seconds = 0.0
+
+    def _api_retry_is_scheduled(self) -> bool:
+        """直近の通信障害に対する待機時間が残っているかを返します。"""
+        return time.monotonic() < self._api_retry_deadline
+
+    def _wait_for_api_retry(self) -> bool:
+        """API障害のバックオフ中だけ停止要求を待ち、通常のポーリングを進めないようにします。"""
+        remaining = self._api_retry_deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        self._stop_event.wait(remaining)
+        return True
 
     @staticmethod
     def _log_delivery_result(job_id: int, completion: dict[str, Any]) -> None:
@@ -190,16 +262,20 @@ class LineWorker:
             )
 
     def _download_attachments(self, job_id: int, attachments: list[dict[str, Any]]) -> list[Path]:
-        """ジョブ添付をローカル一時領域へ取得します。"""
+        """ジョブ添付をローカル一時領域へ取得し、未処理の添付を成功として黙殺しません。"""
         saved: list[Path] = []
         for item in attachments:
             attachment_id = int(item["id"])
             file_name = _safe_file_name(str(item.get("file_name") or f"attachment-{attachment_id}"))
             destination_dir = self._settings.attachment_download_dir / f"job-{job_id}"
-            if item.get("storage_status") == "stored":
+            storage_status = str(item.get("storage_status") or "")
+            if storage_status == "stored":
                 destination = destination_dir / f"{attachment_id}-{file_name}"
                 downloaded = self._client.download_attachment(attachment_id, destination).resolve()
+                if not downloaded.is_file() or downloaded.stat().st_size <= 0:
+                    raise AttachmentProcessingError(f"{file_name} を取得できなかったか、内容が空です")
                 saved.append(downloaded)
+                LOGGER.info("job #%s attachment downloaded id=%s file=%s bytes=%s", job_id, attachment_id, downloaded.name, downloaded.stat().st_size)
                 extracted = _write_office_text_snapshot(
                     downloaded,
                     destination_dir,
@@ -208,15 +284,20 @@ class LineWorker:
                 )
                 if extracted is not None:
                     saved.append(extracted)
+                saved.extend(_extract_video_frames(job_id, attachment_id, downloaded, destination_dir))
                 continue
-            if item.get("storage_status") == "external":
+            if storage_status == "external":
                 provider = (item.get("metadata") or {}).get("contentProvider") or {}
                 external_url = provider.get("originalContentUrl") or provider.get("previewImageUrl")
-                if external_url:
-                    destination_dir.mkdir(parents=True, exist_ok=True)
-                    note = destination_dir / f"{attachment_id}-{file_name}.url.txt"
-                    note.write_text(str(external_url), encoding="utf-8")
-                    saved.append(note.resolve())
+                if not external_url:
+                    raise AttachmentProcessingError(f"{file_name} の外部コンテンツURLがありません")
+                destination_dir.mkdir(parents=True, exist_ok=True)
+                note = destination_dir / f"{attachment_id}-{file_name}.url.txt"
+                note.write_text(str(external_url), encoding="utf-8")
+                saved.append(note.resolve())
+                LOGGER.info("job #%s external attachment recorded id=%s file=%s", job_id, attachment_id, file_name)
+                continue
+            raise AttachmentProcessingError(f"{file_name} の保存状態 {storage_status or '未設定'} は処理できません")
         return saved
 
     def _upload_result_assets(self, job_id: int, paths: tuple[Path, ...]) -> tuple[list[dict], list[str]]:
@@ -263,15 +344,55 @@ def _write_office_text_snapshot(source: Path, destination_dir: Path, attachment_
     try:
         text = extract_office_text(source, max_chars)
     except OfficeTextExtractionError as exc:
-        LOGGER.warning("document text extraction failed attachment=%s file=%s: %s", attachment_id, source.name, exc)
-        return None
+        raise AttachmentProcessingError(f"{source.name} の本文を抽出できませんでした") from exc
     if not text:
+        if source.suffix.lower() in {".docx", ".pdf", ".pptx", ".xlsx"}:
+            raise AttachmentProcessingError(f"{source.name} の本文を抽出できませんでした")
         return None
     destination_dir.mkdir(parents=True, exist_ok=True)
     snapshot = destination_dir / f"{attachment_id}-{source.stem}.line-office-extracted.txt"
     snapshot.write_text(text, encoding="utf-8")
     LOGGER.info("document text extracted attachment=%s file=%s chars=%s", attachment_id, source.name, len(text))
     return snapshot.resolve()
+
+
+def _extract_video_frames(job_id: int, attachment_id: int, source: Path, destination_dir: Path) -> list[Path]:
+    """動画添付を最大4枚のJPEGへ変換し、画像入力対応のCodexモデルへ内容を渡します。"""
+    if source.suffix.lower() not in _VIDEO_SUFFIXES:
+        return []
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise AttachmentProcessingError(f"{source.name} の動画フレーム抽出に必要なffmpegがありません")
+    frame_dir = destination_dir / f"{attachment_id}-video-frames"
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    output_pattern = frame_dir / "frame-%02d.jpg"
+    command = [
+        ffmpeg,
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(source),
+        "-vf",
+        # 短い動画でも最低1枚を得られるよう1秒間隔にし、最大枚数で入力量を制限します。
+        "fps=1",
+        "-frames:v",
+        str(_VIDEO_MAX_FRAMES),
+        "-q:v",
+        "4",
+        str(output_pattern),
+    ]
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise AttachmentProcessingError(f"{source.name} の動画フレーム抽出に失敗しました") from exc
+    frames = sorted(path.resolve() for path in frame_dir.glob("frame-*.jpg") if path.is_file() and path.stat().st_size > 0)
+    if completed.returncode != 0 or not frames:
+        raise AttachmentProcessingError(f"{source.name} の動画フレームを取得できませんでした")
+    LOGGER.info("job #%s video frames extracted attachment=%s file=%s frames=%s", job_id, attachment_id, source.name, len(frames))
+    return frames
 
 
 def _append_upload_errors(text: str, errors: list[str]) -> str:
