@@ -306,7 +306,9 @@ class LineWorker:
         errors: list[str] = []
         for path in paths:
             try:
-                assets.append(self._client.upload_result_asset(job_id, path))
+                asset = self._client.upload_result_asset(job_id, path)
+                assets.append(asset)
+                LOGGER.info("job #%s result asset uploaded file=%s", job_id, path.name)
             except Exception as exc:
                 LOGGER.exception("job #%s result asset upload failed: %s", job_id, path)
                 errors.append(f"{path.name}: {exc}")

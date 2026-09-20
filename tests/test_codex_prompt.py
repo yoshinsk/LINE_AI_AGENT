@@ -13,7 +13,7 @@ import unittest
 
 from docx import Document
 
-from line_ai_agent.codex_runner import OFFICE_REVISION_OUTPUT_SCHEMA, CodexJob, CodexRunner, _tail, build_office_revision_prompt, build_prompt, requires_office_revision
+from line_ai_agent.codex_runner import IMAGE_OUTPUT_REQUIRED_REPLY, OFFICE_REVISION_OUTPUT_SCHEMA, CodexJob, CodexRunner, _tail, build_office_revision_prompt, build_prompt, requires_image_result, requires_office_revision
 from line_ai_agent.projects import ProjectSelection
 
 
@@ -62,6 +62,109 @@ class CodexPromptTest(unittest.TestCase):
         self.assertLess(image_arg_index, args.index("-"))
         self.assertNotIn(str(pdf_path.resolve(strict=False)), args)
         self.assertIsNotNone(output_file)
+
+    def test_image_edit_request_requires_a_line_image_result(self) -> None:
+        job = CodexJob(
+            job_id=39,
+            source_key="user:Uxxx",
+            request_text="この画像をアニメ風に変換してください。",
+            project=ProjectSelection("none", None, None, "未指定"),
+            recent_messages=(),
+            knowledge=(),
+            attachments=(Path("C:/tmp/photo.jpg"),),
+            result_asset_dir=Path("C:/tmp/result-assets/job-39"),
+        )
+
+        prompt = build_prompt(job)
+
+        self.assertTrue(requires_image_result(job))
+        self.assertIn("画像成果物の必須条件", prompt)
+        self.assertIn("PNGまたはJPEG", prompt)
+
+    def test_image_description_request_does_not_require_an_output_file(self) -> None:
+        job = CodexJob(
+            job_id=40,
+            source_key="user:Uxxx",
+            request_text="この画像を説明してください。",
+            project=ProjectSelection("none", None, None, "未指定"),
+            recent_messages=(),
+            knowledge=(),
+            attachments=(Path("C:/tmp/photo.jpg"),),
+        )
+
+        self.assertFalse(requires_image_result(job))
+
+    def test_image_edit_fails_when_command_does_not_create_an_image(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.jpg"
+            source.write_bytes(b"source")
+            script = root / "text_only.py"
+            script.write_text("import sys\nfrom pathlib import Path\nPath(sys.argv[1]).write_text('本文だけの回答', encoding='utf-8')\n", encoding="utf-8")
+            runner = CodexRunner(
+                command=f"{sys.executable} {script} {{output_file}}",
+                timeout_seconds=30,
+                no_project_workdir=root,
+                reply_max_chars=4500,
+                result_asset_output_dir=root / "result-assets",
+                result_asset_allowed_dirs=(root / "result-assets",),
+                result_asset_max_count=5,
+            )
+            job = CodexJob(
+                job_id=41,
+                source_key="user:Uxxx",
+                request_text="この画像をアニメ風に変換してください。",
+                project=ProjectSelection("none", None, None, "未指定"),
+                recent_messages=(),
+                knowledge=(),
+                attachments=(source,),
+            )
+
+            result = runner.run(job)
+
+            self.assertFalse(result.ok)
+            self.assertEqual(IMAGE_OUTPUT_REQUIRED_REPLY, result.text)
+            self.assertEqual((), result.asset_paths)
+
+    def test_image_edit_returns_a_generated_png_from_allowed_image_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.jpg"
+            source.write_bytes(b"source")
+            generated_images = root / "generated-images"
+            script = root / "image_writer.py"
+            script.write_text(
+                "import sys\nfrom pathlib import Path\n"
+                f"result_dir = Path({json.dumps(str(generated_images / 'agent-run'))})\n"
+                "result_dir.mkdir(parents=True, exist_ok=True)\n"
+                "(result_dir / 'edited.png').write_bytes(b'png')\n"
+                "Path(sys.argv[1]).write_text('edited.png を生成しました。', encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            runner = CodexRunner(
+                command=f"{sys.executable} {script} {{output_file}}",
+                timeout_seconds=30,
+                no_project_workdir=root,
+                reply_max_chars=4500,
+                result_asset_output_dir=root / "result-assets",
+                result_asset_allowed_dirs=(generated_images,),
+                result_asset_max_count=5,
+            )
+            job = CodexJob(
+                job_id=42,
+                source_key="user:Uxxx",
+                request_text="この画像をアニメ風に変換してください。",
+                project=ProjectSelection("none", None, None, "未指定"),
+                recent_messages=(),
+                knowledge=(),
+                attachments=(source,),
+            )
+
+            result = runner.run(job)
+
+            self.assertTrue(result.ok, result.text)
+            self.assertEqual(1, len(result.asset_paths))
+            self.assertEqual("edited.png", result.asset_paths[0].name)
 
     def test_prompt_embeds_office_text_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

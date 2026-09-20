@@ -33,9 +33,9 @@ LINE
 
 ## 添付ファイルと成果物
 
-LINEの `file` / `image` / `video` / `audio` メッセージを受けると、サーバ側がLINEのcontent取得APIでバイナリを取得し、Web公開root外の `private/attachments` などに保存します。ワーカーは内部APIの認証付きdownload endpointから添付を取得し、Codexプロンプトへ絶対パスとして渡します。
+LINEの `file` / `image` / `video` / `audio` メッセージを受けると、サーバ側がLINEのcontent取得APIでバイナリを取得し、Web公開root外の `private/attachments` などに保存します。添付だけで作業指示がない場合は、AIが内容を推測して処理せず、対象と作業内容を指定するよう即時返信します。複数添付では「この画像」「2件目」「ファイル名」などで対象を指定できます。後続の指示を受けてから、ワーカーは内部APIの認証付きdownload endpointから該当添付を取得し、Codexプロンプトへ絶対パスとして渡します。
 
-画像添付はCodex CLIの `--image` にも渡します。PDFや通常ファイルはローカル保存パスをプロンプトに渡します。DOCX、XLSX、PPTX、PDFは抽出した本文も渡すため、対応形式の内容を会話・検索ナレッジへ再利用できます。
+画像添付はCodex CLIの `--image` にも渡します。PDFや通常ファイルはローカル保存パスをプロンプトに渡します。DOCX、XLSX、PPTX、PDFは抽出した本文も渡すため、対応形式の内容を会話・検索ナレッジへ再利用できます。画像の説明・確認依頼は本文で回答しますが、画像の編集・変換・生成依頼ではPNGまたはJPEGの成果物生成とLINE送信を必須にします。成果物が回収できない場合は本文だけを成功として配信せず、失敗として記録します。
 
 DOCX、XLSX、PPTX、PDFは、ワーカーが本文・セル値・スライド文字列・ページ文字列を抽出し、元ファイルと対応付けたテキストをCodexプロンプトへ直接渡します。そのため、対応形式はバイナリのローカルパスだけを渡して読取不能になることはありません。抽出量は `LINE_AGENT_ATTACHMENT_TEXT_MAX_CHARS`（既定60,000文字）で制限します。旧形式のDOC/XLS/PPTは対象外のため、DOCX/XLSX/PPTXまたはPDFへ変換して送信してください。マクロ付きOffice文書は従来どおり受信拒否します。
 
@@ -159,13 +159,13 @@ https://example.com/line/
 - 通常の短文依頼では、Webhook受信時の受付返信は送らず、処理完了後のAI回答だけをpushします。
 - AI回答は、LINEの `quoteToken` が取得できる場合、ユーザーの依頼メッセージへの返信としてpushします。
 - 添付、プロジェクト指定、複数行、長文、または `LINE_AI_AGENT_ACK_KEYWORDS` に一致する依頼では `LINE_AI_AGENT_ACK_TEXT` をreplyします。
-- 添付単体の依頼では `LINE_AI_AGENT_ATTACHMENT_ACK_TEXT` をreplyします。
+- 添付だけの場合はジョブを作成せず、対象と作業内容を指定する標準文をreplyします。例: 「この画像をアニメ風に変換」「添付PDFを要約」「2件目のExcelを修正」。
 
 添付の後続指示:
 
 - 画像やファイルを送った後、別メッセージで「この画像をアニメ風に変換」などと指示した場合、同一会話の直近添付を最初の後続依頼だけへ渡します。
 - 再利用する時間は `LINE_AI_AGENT_ATTACHMENT_CONTEXT_MINUTES` で設定します。既定値は `LINE_AI_AGENT_ATTACHMENT_RECENT_MINUTES` と同じ30分です。
-- 添付とジョブの関連は多対多で記録します。受信時の自動要約と最初の後続編集依頼には同じ添付を利用できますが、無関係な後続メッセージへは自動流用しません。
+- 添付とジョブの関連は多対多で記録します。最初の後続指示には同じ添付を利用できますが、無関係な後続メッセージへは自動流用しません。
 
 ## ワーカー設定（Windows例）
 
@@ -235,7 +235,7 @@ Get-ScheduledTaskInfo -TaskName "LINE_AI_AGENT_Worker_Watchdog"
 Get-Content -Encoding UTF8 .\.state\logs\worker.err.log -Tail 80
 ```
 
-LINE配信が受理された場合は `job #123 delivery accepted status=200 attempts=1` のように記録されます。配信未受理の場合は `LINE delivery was not accepted` としてエラーログへ記録されます。
+LINE配信が受理された場合は `job #123 delivery accepted status=200 attempts=1` のように記録されます。画像などの成果物をサーバへ送れた場合は、その直前に `job #123 result asset uploaded file=edited.png` のように記録されます。配信未受理の場合は `LINE delivery was not accepted` としてエラーログへ記録されます。
 
 ## 運用上の確認事項
 

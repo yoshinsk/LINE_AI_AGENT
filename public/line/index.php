@@ -77,11 +77,8 @@ try {
             }
 
             if ($sourceInfo['source_type'] === 'user') {
-                $requestText = "添付ファイルを確認してください。内容を要約し、重要点と次に必要な行動を返信してください。\n" . $summary;
-                $jobId = line_agent_enqueue_job($storedEvent['id'], $sourceInfo, $requestText, null);
-                line_agent_link_recent_attachments_to_job($sourceInfo['source_key'], $jobId, [(int) $attachment['id']]);
-                $reply = line_agent_reply($event['replyToken'] ?? null, line_agent_ack_text('LINE_AI_AGENT_ATTACHMENT_ACK_TEXT', $jobId));
-                line_agent_store_delivery_attempt($jobId, $sourceInfo['source_key'], 'reply_attachment_ack', $reply);
+                $reply = line_agent_reply($event['replyToken'] ?? null, line_agent_attachment_instruction_request());
+                line_agent_store_delivery_attempt(null, $sourceInfo['source_key'], 'reply_attachment_instruction_request', $reply);
                 $handled++;
             }
             continue;

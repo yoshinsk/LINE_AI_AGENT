@@ -1053,7 +1053,17 @@ function line_agent_attachment_summary(array $attachment): string
 }
 
 /**
- * 同一会話の直近添付をジョブへ紐づけます。自動要約を除き、後続指示への再利用は1回に限定します。
+ * 添付だけを受信した際に、対象と作業内容を明示してもらう標準返信を作ります。
+ */
+function line_agent_attachment_instruction_request(): string
+{
+    return "添付を受け取りました。何を行うか指定してください。\n"
+        . "複数の画像・ファイルがある場合は、対象を「この画像」「2件目」「ファイル名」などで指定してください。\n"
+        . "例:「この画像をアニメ風に変換」「添付PDFを要約」「2件目のExcelを修正」";
+}
+
+/**
+ * 同一会話の直近添付をジョブへ紐づけ、後続指示への再利用は1回に限定します。
  */
 function line_agent_link_recent_attachments_to_job(string $sourceKey, int $jobId, array $attachmentIds = []): array
 {

@@ -24,9 +24,43 @@ from .result_assets import collect_result_asset_paths, sanitize_result_text
 COMMAND_FAILURE_REPLY = "内部処理を完了できませんでした。詳細はワーカーのログに記録しました。"
 AI_AGENT_TIMEOUT_REPLY = "AIエージェントの実行がタイムアウトしました。"
 AI_AGENT_EMPTY_REPLY = "AIエージェントの実行結果が空でした。"
+IMAGE_OUTPUT_REQUIRED_REPLY = "画像の編集・生成を完了できませんでした。LINEへ添付するPNGまたはJPEGファイルを生成できませんでした。"
 CODEX_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+LINE_IMAGE_RESULT_SUFFIXES = {".jpg", ".jpeg", ".png"}
 OFFICE_DOCUMENT_SUFFIXES = {".docx", ".xlsx", ".pptx", ".pdf"}
 OFFICE_TEXT_SIDECAR_SUFFIX = ".line-office-extracted.txt"
+IMAGE_RESULT_KEYWORDS = (
+    "画像生成",
+    "生成して",
+    "作成して",
+    "描いて",
+    "変換",
+    "加工",
+    "編集",
+    "修正",
+    "修復",
+    "リタッチ",
+    "合成",
+    "切り抜",
+    "背景を",
+    "透過",
+    "ぼかし",
+    "モザイク",
+    "アップスケール",
+    "高画質",
+    "アニメ風",
+    "イラスト風",
+    "漫画風",
+    "カートゥーン",
+    "色を変",
+    "stylize",
+    "transform",
+    "edit",
+    "generate",
+    "retouch",
+    "cartoon",
+    "anime",
+)
 OFFICE_REVISION_KEYWORDS = (
     "添削",
     "校正",
@@ -92,9 +126,11 @@ class CodexRunner:
         """設定に応じてdry-runまたはCodex CLIを実行します。"""
         job = self._with_result_asset_dir(job)
         if not self._command:
+            if requires_image_result(job):
+                return CodexResult(IMAGE_OUTPUT_REQUIRED_REPLY, False, ())
             return CodexResult(build_dry_run_reply(job), True, ())
 
-        return self._run_command(job, build_prompt(job))
+        return self._run_command(job, build_prompt(job), require_image_asset=requires_image_result(job))
 
     def run_office_revision(self, job: CodexJob) -> CodexResult:
         """Codexの構造化編集計画を回収し、ワーカー側で修正済みOfficeファイルを確実に生成します。"""
@@ -130,6 +166,7 @@ class CodexRunner:
         *,
         output_schema_file: Path | None = None,
         clip_reply: bool = True,
+        require_image_asset: bool = False,
     ) -> CodexResult:
         """指定プロンプトでCodex CLIを一度実行し、今回更新された成果物だけを回収します。"""
 
@@ -184,6 +221,8 @@ class CodexRunner:
             self._result_asset_max_count,
             modified_since=execution_started_at - 2.0,
         )
+        if require_image_asset and not any(_is_line_image_result(path) for path in asset_paths):
+            return CodexResult(IMAGE_OUTPUT_REQUIRED_REPLY, False, ())
         text = sanitize_result_text(raw_text, asset_paths)
         return CodexResult(_clip(text, self._reply_max_chars) if clip_reply else text, True, asset_paths)
 
@@ -260,6 +299,17 @@ def build_prompt(job: CodexJob, *, include_office_file_requirement: bool = True)
                 "",
             ]
         )
+    if requires_image_result(job):
+        lines.extend(
+            [
+                "画像成果物の必須条件:",
+                "今回の依頼は、添付画像を編集・変換または新規生成してLINEへ返すものです。本文だけで完了してはいけません。",
+                "画像生成・編集機能を使い、最終成果物をPNGまたはJPEG形式でLINE送信用の成果物出力先へ保存してください。",
+                "回答前に出力先に画像ファイルが実在することを確認し、本文には生成ファイル名だけを短く記載してください。",
+                "ローカルパス、画像の説明だけ、または生成できなかった旨の本文だけを成果物として返してはいけません。",
+                "",
+            ]
+        )
     if job.recent_messages:
         lines.extend(["直近の会話履歴:"])
         for item in job.recent_messages:
@@ -327,6 +377,12 @@ def requires_office_revision(job: CodexJob) -> bool:
     """Office添付に対する添削・修正依頼かを、明示的な日本語キーワードで判定します。"""
     request = job.request_text.lower()
     return bool(office_documents(job)) and any(keyword in request for keyword in OFFICE_REVISION_KEYWORDS)
+
+
+def requires_image_result(job: CodexJob) -> bool:
+    """画像添付に対する編集・変換・生成依頼だけで画像成果物を必須にします。"""
+    request = job.request_text.lower()
+    return any(_is_codex_image(path) for path in job.attachments) and any(keyword in request for keyword in IMAGE_RESULT_KEYWORDS)
 
 
 OFFICE_REVISION_OUTPUT_SCHEMA = {
@@ -439,6 +495,11 @@ def _codex_image_args(attachments: tuple[Path, ...]) -> list[str]:
 def _is_codex_image(path: Path) -> bool:
     """Codex CLIが画像入力として受け取れる拡張子かを判定します。"""
     return path.suffix.lower() in CODEX_IMAGE_SUFFIXES
+
+
+def _is_line_image_result(path: Path) -> bool:
+    """LINE画像メッセージとして配信できるJPEGまたはPNG成果物かを判定します。"""
+    return path.suffix.lower() in LINE_IMAGE_RESULT_SUFFIXES
 
 
 def _is_office_text_sidecar(path: Path) -> bool:
