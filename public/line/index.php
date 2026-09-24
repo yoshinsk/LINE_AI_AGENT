@@ -105,7 +105,7 @@ try {
             'line_message_type' => 'text',
         ]);
 
-        if (!line_agent_is_addressed($sourceInfo, $text, $message)) {
+        if (!line_agent_is_addressed($sourceInfo, $text, $message) && !line_agent_is_recent_group_attachment_followup($sourceInfo, $text)) {
             continue;
         }
 

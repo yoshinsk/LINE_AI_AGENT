@@ -1063,45 +1063,77 @@ function line_agent_attachment_instruction_request(): string
 }
 
 /**
+ * 後続指示へ安全に関連付けられる、直近の未処理添付IDを取得します。
+ *
+ * 過去の自動要約ジョブだけに紐づいた添付は再利用できますが、既に明示指示で処理した添付は除外します。
+ */
+function line_agent_recent_available_attachment_ids(string $sourceKey): array
+{
+    $minutes = max(1, min(1440, (int) line_agent_config(
+        'LINE_AI_AGENT_ATTACHMENT_CONTEXT_MINUTES',
+        (string) line_agent_config('LINE_AI_AGENT_ATTACHMENT_RECENT_MINUTES', '30')
+    )));
+    $limit = max(1, min(10, (int) line_agent_config('LINE_AI_AGENT_ATTACHMENT_MAX_PER_JOB', '5')));
+    $stmt = line_agent_db()->prepare(
+        "SELECT attachment.id
+           FROM line_attachments attachment
+          WHERE attachment.source_key = :source_key
+            AND attachment.storage_status IN ('stored', 'external')
+            AND attachment.created_at >= DATE_SUB(CURRENT_TIMESTAMP, INTERVAL $minutes MINUTE)
+            AND NOT EXISTS (
+                SELECT 1
+                  FROM line_job_attachment_links prior_link
+                  JOIN line_jobs prior_job ON prior_job.id = prior_link.job_id
+                 WHERE prior_link.attachment_id = attachment.id
+                   AND prior_job.request_text NOT LIKE :attachment_auto_request
+            )
+          ORDER BY attachment.created_at DESC, attachment.id DESC
+          LIMIT $limit"
+    );
+    $stmt->execute([
+        ':source_key' => $sourceKey,
+        ':attachment_auto_request' => '添付ファイルを確認してください。%',
+    ]);
+    return array_map('intval', array_column($stmt->fetchAll(), 'id'));
+}
+
+/**
+ * グループ内の通常会話を起動しないため、添付処理を示す文言だけを判定します。
+ */
+function line_agent_is_attachment_work_instruction(string $text): bool
+{
+    $instruction = trim($text);
+    if ($instruction === '') {
+        return false;
+    }
+    if (preg_match('/(?:添付(?:ファイル)?|画像|写真|動画|音声|PDF|Word|Excel|PowerPoint|ファイル|資料|[0-9０-９]+件目)/iu', $instruction)) {
+        return true;
+    }
+    return preg_match('/(?:要約|解析|分析|確認|修正|編集|変換|生成|作成|抽出|翻訳|説明|文字起こし|添削|校正|加工|リサイズ|切り抜き|背景|アニメ風|イラスト風|読んで|見て)/u', $instruction) === 1;
+}
+
+/**
+ * グループ・ルームの直近未処理添付に対する作業指示だけを、メンションなしで受け付けます。
+ */
+function line_agent_is_recent_group_attachment_followup(array $sourceInfo, string $text): bool
+{
+    if (!in_array((string) ($sourceInfo['source_type'] ?? ''), ['group', 'room'], true)) {
+        return false;
+    }
+    if (!line_agent_is_attachment_work_instruction($text)) {
+        return false;
+    }
+    return line_agent_recent_available_attachment_ids((string) ($sourceInfo['source_key'] ?? '')) !== [];
+}
+
+/**
  * 同一会話の直近添付をジョブへ紐づけ、後続指示への再利用は1回に限定します。
  */
 function line_agent_link_recent_attachments_to_job(string $sourceKey, int $jobId, array $attachmentIds = []): array
 {
     $attachmentIds = array_values(array_unique(array_filter(array_map('intval', $attachmentIds))));
     if (!$attachmentIds) {
-        $minutes = max(1, min(1440, (int) line_agent_config(
-            'LINE_AI_AGENT_ATTACHMENT_CONTEXT_MINUTES',
-            (string) line_agent_config('LINE_AI_AGENT_ATTACHMENT_RECENT_MINUTES', '30')
-        )));
-        $limit = max(1, min(10, (int) line_agent_config('LINE_AI_AGENT_ATTACHMENT_MAX_PER_JOB', '5')));
-        $stmt = line_agent_db()->prepare(
-            "SELECT attachment.id
-               FROM line_attachments attachment
-          LEFT JOIN line_job_attachment_links linked
-                 ON linked.attachment_id = attachment.id
-                AND linked.job_id = :job_id
-              WHERE attachment.source_key = :source_key
-                AND attachment.storage_status IN ('stored', 'external')
-                AND attachment.created_at >= DATE_SUB(CURRENT_TIMESTAMP, INTERVAL $minutes MINUTE)
-                AND linked.job_id IS NULL
-                AND NOT EXISTS (
-                    SELECT 1
-                      FROM line_job_attachment_links prior_link
-                      JOIN line_jobs prior_job ON prior_job.id = prior_link.job_id
-                     WHERE prior_link.attachment_id = attachment.id
-                       AND prior_job.id <> :current_job_id
-                       AND prior_job.request_text NOT LIKE :attachment_auto_request
-                )
-              ORDER BY attachment.created_at DESC, attachment.id DESC
-              LIMIT $limit"
-        );
-        $stmt->execute([
-            ':job_id' => $jobId,
-            ':current_job_id' => $jobId,
-            ':source_key' => $sourceKey,
-            ':attachment_auto_request' => '添付ファイルを確認してください。%',
-        ]);
-        $attachmentIds = array_map('intval', array_column($stmt->fetchAll(), 'id'));
+        $attachmentIds = line_agent_recent_available_attachment_ids($sourceKey);
     }
 
     if (!$attachmentIds) {
