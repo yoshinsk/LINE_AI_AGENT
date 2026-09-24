@@ -242,6 +242,7 @@ LINE配信が受理された場合は `job #123 delivery accepted status=200 att
 
 - `CODEX_COMMAND` には `--model gpt-5.6-terra` を明示します。モデルの既定値が変更されても、LINEワーカーはGPT-5.6 Terraを使い続けます。
 - ヘルスチェックはワーカーと同じモジュール探索パスで実行します。`./scripts/health-worker.ps1` が `{'ok': True, 'service': 'line-ai-agent-internal'}` を返すことを確認してください。
+- `scripts\status-worker.ps1` は、PIDファイルだけでなくPythonの `-m line_ai_agent ... serve` 実行形式まで照合します。PID再利用や監視用PowerShell自身を、稼働中ワーカーとして誤認しません。
 - 監視タスクは `wscript.exe` から非表示で起動します。`pythonw.exe` で発生した `0xC0000005` を回避し、AC電源・バッテリーのいずれでも1分間隔の監視を継続します。
 - 画像はCodex CLIの `--image` で渡し、DOCX/XLSX/PPTX/PDFは本文抽出テキストも渡します。動画は `ffmpeg` で最大4枚のJPEGフレームへ変換して画像入力として渡します。`ffmpeg` がない、ダウンロードが空、外部添付URLがない、またはOffice本文を抽出できない場合は、黙って添付を除外せずジョブを失敗として記録します。
 - GPT-5.6 Terraは音声・動画の直接入力には対応しません。音声の内容理解には別途文字起こし機能が必要です。動画は上記フレーム抽出により映像内容を扱います。

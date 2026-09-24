@@ -4,19 +4,18 @@
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $PidFile = Join-Path $ProjectRoot ".state\worker.pid"
+. (Join-Path $PSScriptRoot "worker-process.ps1")
 
 if (Test-Path -LiteralPath $PidFile) {
     $pidValue = [int](Get-Content -LiteralPath $PidFile -Raw)
-    $process = Get-Process -Id $pidValue -ErrorAction SilentlyContinue
+    $process = Get-LineAgentWorkerProcessById -ProcessId $pidValue
     if ($process) {
         Write-Output "running pid=$pidValue"
         exit 0
     }
 }
 
-$matches = Get-CimInstance Win32_Process | Where-Object {
-    $_.CommandLine -like "*line_ai_agent*" -and $_.CommandLine -like "* serve*"
-}
+$matches = Get-LineAgentWorkerProcesses
 if ($matches) {
     $matches | ForEach-Object { Write-Output "running pid=$($_.ProcessId)" }
     exit 0
@@ -24,4 +23,3 @@ if ($matches) {
 
 Write-Output "stopped"
 exit 1
-

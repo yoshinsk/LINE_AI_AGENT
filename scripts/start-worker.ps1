@@ -16,12 +16,13 @@ $env:PYTHONPATH = Join-Path $ProjectRoot "src"
 $outLog = Join-Path $LogDir "worker.out.log"
 $errLog = Join-Path $LogDir "worker.err.log"
 $pidFile = Join-Path $StateDir "worker.pid"
+. (Join-Path $PSScriptRoot "worker-process.ps1")
 
 if (Test-Path -LiteralPath $pidFile) {
     $pidRaw = Get-Content -LiteralPath $pidFile -Raw
     $pidValue = 0
     if ([int]::TryParse($pidRaw.Trim(), [ref]$pidValue)) {
-        $existing = Get-Process -Id $pidValue -ErrorAction SilentlyContinue
+        $existing = Get-LineAgentWorkerProcessById -ProcessId $pidValue
         if ($existing) {
             Write-Output "already running pid=$pidValue"
             exit 0
@@ -30,9 +31,7 @@ if (Test-Path -LiteralPath $pidFile) {
     Remove-Item -LiteralPath $pidFile -Force
 }
 
-$matches = Get-CimInstance Win32_Process | Where-Object {
-    $_.CommandLine -like "*line_ai_agent*" -and $_.CommandLine -like "* serve*"
-}
+$matches = Get-LineAgentWorkerProcesses
 if ($matches) {
     $runningPid = [int]($matches | Select-Object -First 1).ProcessId
     $runningPid | Set-Content -LiteralPath $pidFile -Encoding ascii
