@@ -18,7 +18,7 @@ from typing import Any
 
 from .projects import ProjectSelection
 from .office_revision import OfficeRevisionError, apply_office_revision_plan
-from .result_assets import collect_result_asset_paths, sanitize_result_text
+from .result_assets import collect_recent_line_image_asset_paths, collect_result_asset_paths, sanitize_result_text
 
 
 COMMAND_FAILURE_REPLY = "内部処理を完了できませんでした。詳細はワーカーのログに記録しました。"
@@ -221,6 +221,14 @@ class CodexRunner:
             self._result_asset_max_count,
             modified_since=execution_started_at - 2.0,
         )
+        if require_image_asset and not any(_is_line_image_result(path) for path in asset_paths):
+            generated_images = collect_recent_line_image_asset_paths(
+                self._result_asset_allowed_dirs,
+                self._result_asset_max_count,
+                modified_since=execution_started_at - 2.0,
+            )
+            # 本文へファイル名を返せなかった場合でも、今回の実行で生成された画像を優先して送信します。
+            asset_paths = _merge_asset_paths(generated_images, asset_paths, self._result_asset_max_count)
         if require_image_asset and not any(_is_line_image_result(path) for path in asset_paths):
             return CodexResult(IMAGE_OUTPUT_REQUIRED_REPLY, False, ())
         text = sanitize_result_text(raw_text, asset_paths)
@@ -500,6 +508,25 @@ def _is_codex_image(path: Path) -> bool:
 def _is_line_image_result(path: Path) -> bool:
     """LINE画像メッセージとして配信できるJPEGまたはPNG成果物かを判定します。"""
     return path.suffix.lower() in LINE_IMAGE_RESULT_SUFFIXES
+
+
+def _merge_asset_paths(
+    preferred_paths: tuple[Path, ...],
+    remaining_paths: tuple[Path, ...],
+    max_count: int,
+) -> tuple[Path, ...]:
+    """優先成果物を先頭にしつつ、同一実体を除いて送信数上限まで結合します。"""
+    merged: list[Path] = []
+    seen: set[str] = set()
+    for path in (*preferred_paths, *remaining_paths):
+        key = os.path.normcase(str(path))
+        if key in seen:
+            continue
+        merged.append(path)
+        seen.add(key)
+        if len(merged) >= max(1, max_count):
+            break
+    return tuple(merged)
 
 
 def _is_office_text_sidecar(path: Path) -> bool:

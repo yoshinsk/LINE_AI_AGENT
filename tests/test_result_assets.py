@@ -11,7 +11,7 @@ import tempfile
 import time
 import unittest
 
-from line_ai_agent.result_assets import collect_result_asset_paths, sanitize_result_text
+from line_ai_agent.result_assets import collect_recent_line_image_asset_paths, collect_result_asset_paths, sanitize_result_text
 
 
 class ResultAssetsTest(unittest.TestCase):
@@ -90,6 +90,21 @@ class ResultAssetsTest(unittest.TestCase):
             paths = collect_result_asset_paths(str(outside_file), allowed_dir, (allowed_dir,), 5)
 
             self.assertEqual((), paths)
+
+    def test_collects_recent_line_image_without_a_response_file_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            generated_images = Path(temp_dir) / "generated-images"
+            result_file = generated_images / "agent-run" / "exec-image.png"
+            result_file.parent.mkdir(parents=True)
+            result_file.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+            paths = collect_recent_line_image_asset_paths(
+                (generated_images,),
+                5,
+                modified_since=time.time() - 5,
+            )
+
+            self.assertEqual((result_file.resolve(),), paths)
 
 
 if __name__ == "__main__":

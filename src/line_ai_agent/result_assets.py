@@ -54,6 +54,7 @@ RESULT_ASSET_BLOCKED_SUFFIXES = {
     ".xml",
     ".zsh",
 }
+LINE_IMAGE_RESULT_SUFFIXES = {".jpeg", ".jpg", ".png"}
 _SUFFIX_PATTERN = "|".join(re.escape(item.lstrip(".")) for item in sorted(RESULT_ASSET_SUFFIXES, key=len, reverse=True))
 _WINDOWS_PATH_PATTERN = re.compile(rf"[A-Za-z]:\\[^\r\n<>\"|?*]+?\.({_SUFFIX_PATTERN})(?=$|[\s\r\n\"')\]}}、。,.）】])", re.IGNORECASE)
 _POSIX_PATH_PATTERN = re.compile(rf"/[^\r\n<>\"|?*]+?\.({_SUFFIX_PATTERN})(?=$|[\s\r\n\"')\]}}、。,.）】])", re.IGNORECASE)
@@ -101,6 +102,43 @@ def collect_result_asset_paths(
         if not _is_inside_any(resolved, roots) or not is_result_asset_allowed(resolved):
             continue
         if not _is_inside_any(resolved, output_roots) and not _is_modified_since(resolved, modified_since):
+            continue
+        collected.append(resolved)
+        seen.add(key)
+        if len(collected) >= max(1, max_count):
+            break
+    return tuple(collected)
+
+
+def collect_recent_line_image_asset_paths(
+    allowed_dirs: tuple[Path, ...],
+    max_count: int,
+    modified_since: float,
+) -> tuple[Path, ...]:
+    """今回の実行中に許可領域へ生成されたLINE送信用画像だけを回収します。
+
+    Codexの画像生成は、本文へファイル名を返す前にツール実行が失敗しても
+    ``.codex/generated_images`` へ画像を保存済みの場合があります。この経路は
+    本文に含まれないPNG/JPEGを、実行開始時刻以降という境界付きで検出します。
+    """
+    roots = _resolved_roots(allowed_dirs)
+    candidates: list[Path] = []
+    for root in roots:
+        candidates.extend(_files_under(root))
+
+    collected: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.expanduser().resolve(strict=True)
+        except OSError:
+            continue
+        key = os.path.normcase(str(resolved))
+        if key in seen or not _is_inside_any(resolved, roots):
+            continue
+        if resolved.suffix.lower() not in LINE_IMAGE_RESULT_SUFFIXES:
+            continue
+        if not _is_modified_since(resolved, modified_since):
             continue
         collected.append(resolved)
         seen.add(key)

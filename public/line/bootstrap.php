@@ -1065,7 +1065,8 @@ function line_agent_attachment_instruction_request(): string
 /**
  * 後続指示へ安全に関連付けられる、直近の未処理添付IDを取得します。
  *
- * 過去の自動要約ジョブだけに紐づいた添付は再利用できますが、既に明示指示で処理した添付は除外します。
+ * 実行中または成功済みの明示指示に紐づく添付は除外します。失敗・配信失敗の添付は、
+ * 同じ会話で指示を送り直せるよう再利用を許可します。
  */
 function line_agent_recent_available_attachment_ids(string $sourceKey): array
 {
@@ -1083,8 +1084,9 @@ function line_agent_recent_available_attachment_ids(string $sourceKey): array
             AND NOT EXISTS (
                 SELECT 1
                   FROM line_job_attachment_links prior_link
-                  JOIN line_jobs prior_job ON prior_job.id = prior_link.job_id
+                 JOIN line_jobs prior_job ON prior_job.id = prior_link.job_id
                  WHERE prior_link.attachment_id = attachment.id
+                   AND prior_job.status IN ('queued', 'running', 'succeeded')
                    AND prior_job.request_text NOT LIKE :attachment_auto_request
             )
           ORDER BY attachment.created_at DESC, attachment.id DESC
@@ -1127,7 +1129,7 @@ function line_agent_is_recent_group_attachment_followup(array $sourceInfo, strin
 }
 
 /**
- * 同一会話の直近添付をジョブへ紐づけ、後続指示への再利用は1回に限定します。
+ * 同一会話の直近添付をジョブへ紐づけ、実行中または成功済みの作業への重複利用を防ぎます。
  */
 function line_agent_link_recent_attachments_to_job(string $sourceKey, int $jobId, array $attachmentIds = []): array
 {

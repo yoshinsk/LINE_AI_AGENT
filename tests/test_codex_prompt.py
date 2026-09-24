@@ -166,6 +166,45 @@ class CodexPromptTest(unittest.TestCase):
             self.assertEqual(1, len(result.asset_paths))
             self.assertEqual("edited.png", result.asset_paths[0].name)
 
+    def test_image_edit_recovers_generated_png_when_response_omits_file_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.jpg"
+            source.write_bytes(b"source")
+            generated_images = root / "generated-images"
+            script = root / "image_writer.py"
+            script.write_text(
+                "import sys\nfrom pathlib import Path\n"
+                f"result_dir = Path({json.dumps(str(generated_images / 'agent-run'))})\n"
+                "result_dir.mkdir(parents=True, exist_ok=True)\n"
+                "(result_dir / 'exec-image.png').write_bytes(b'png')\n"
+                "Path(sys.argv[1]).write_text('画像は生成しましたが保存確認に失敗しました。', encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            runner = CodexRunner(
+                command=f"{sys.executable} {script} {{output_file}}",
+                timeout_seconds=30,
+                no_project_workdir=root,
+                reply_max_chars=4500,
+                result_asset_output_dir=root / "result-assets",
+                result_asset_allowed_dirs=(generated_images,),
+                result_asset_max_count=5,
+            )
+            job = CodexJob(
+                job_id=43,
+                source_key="user:Uxxx",
+                request_text="この画像をアニメ風に変換してください。",
+                project=ProjectSelection("none", None, None, "未指定"),
+                recent_messages=(),
+                knowledge=(),
+                attachments=(source,),
+            )
+
+            result = runner.run(job)
+
+            self.assertTrue(result.ok, result.text)
+            self.assertEqual("exec-image.png", result.asset_paths[0].name)
+
     def test_prompt_embeds_office_text_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
