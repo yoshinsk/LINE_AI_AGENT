@@ -42,4 +42,12 @@ if ($matches) {
 $args = @("-u", "-m", "line_ai_agent", "--env", $EnvFile, "--log-level", $LogLevel, "serve")
 $process = Start-Process -FilePath "python" -ArgumentList $args -WorkingDirectory $ProjectRoot -RedirectStandardOutput $outLog -RedirectStandardError $errLog -WindowStyle Hidden -PassThru
 $process.Id | Set-Content -LiteralPath $pidFile -Encoding ascii
-Write-Output "started pid=$($process.Id)"
+for ($attempt = 0; $attempt -lt 20; $attempt++) {
+    Start-Sleep -Milliseconds 250
+    if (Get-LineAgentWorkerProcessById -ProcessId $process.Id) {
+        Write-Output "started pid=$($process.Id)"
+        exit 0
+    }
+}
+Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
+throw "worker exited before readiness; inspect $errLog"

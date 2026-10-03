@@ -262,6 +262,32 @@ class CodexPromptTest(unittest.TestCase):
 
         self.assertFalse(requires_office_revision(job))
 
+    def test_office_improvement_report_does_not_require_rewriting_the_attached_pdf(self) -> None:
+        job = CodexJob(
+            job_id=44,
+            source_key="group:Gxxx",
+            request_text="このPDFの黄色い指摘について改善を求められています。対応を教えてください。",
+            project=ProjectSelection("none", None, None, "未指定"),
+            recent_messages=(),
+            knowledge=(),
+            attachments=(Path("C:/tmp/security-check.pdf"),),
+        )
+
+        self.assertFalse(requires_office_revision(job))
+
+    def test_explicit_pdf_improvement_request_requires_a_revised_file(self) -> None:
+        job = CodexJob(
+            job_id=45,
+            source_key="user:Uxxx",
+            request_text="添付PDFを改善してください。",
+            project=ProjectSelection("none", None, None, "未指定"),
+            recent_messages=(),
+            knowledge=(),
+            attachments=(Path("C:/tmp/report.pdf"),),
+        )
+
+        self.assertTrue(requires_office_revision(job))
+
     def test_structured_office_plan_becomes_a_returned_docx_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

@@ -65,16 +65,16 @@ OFFICE_REVISION_KEYWORDS = (
     "添削",
     "校正",
     "校閲",
-    "修正",
-    "訂正",
     "推敲",
     "書き直",
     "書き換",
     "リライト",
     "ブラッシュアップ",
-    "改善",
     "磨いて",
     "直して",
+)
+OFFICE_REVISION_IMPERATIVE_PATTERN = re.compile(
+    r"(?:修正|訂正|改善)(?:して|を(?:して|お願|ください)|したい)"
 )
 
 
@@ -382,9 +382,11 @@ def office_documents(job: CodexJob) -> tuple[Path, ...]:
 
 
 def requires_office_revision(job: CodexJob) -> bool:
-    """Office添付に対する添削・修正依頼かを、明示的な日本語キーワードで判定します。"""
+    """添付文書そのものの編集を求める命令形だけを、修正済みファイル返却対象として判定します。"""
     request = job.request_text.lower()
-    return bool(office_documents(job)) and any(keyword in request for keyword in OFFICE_REVISION_KEYWORDS)
+    if not office_documents(job):
+        return False
+    return any(keyword in request for keyword in OFFICE_REVISION_KEYWORDS) or OFFICE_REVISION_IMPERATIVE_PATTERN.search(request) is not None
 
 
 def requires_image_result(job: CodexJob) -> bool:

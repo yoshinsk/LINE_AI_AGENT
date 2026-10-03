@@ -105,7 +105,10 @@ try {
             'line_message_type' => 'text',
         ]);
 
-        if (!line_agent_is_addressed($sourceInfo, $text, $message) && !line_agent_is_recent_group_attachment_followup($sourceInfo, $text)) {
+        $isAddressed = line_agent_is_addressed($sourceInfo, $text, $message);
+        $isAttachmentFollowup = line_agent_is_recent_group_attachment_followup($sourceInfo, $text);
+        $isQuotedWorkFollowup = line_agent_is_quoted_agent_work_followup($sourceInfo, $text, $message);
+        if (!$isAddressed && !$isAttachmentFollowup && !$isQuotedWorkFollowup) {
             continue;
         }
 

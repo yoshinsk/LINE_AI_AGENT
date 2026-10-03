@@ -23,6 +23,9 @@ function assert_attachment_instruction(string $text, bool $expected): void
 assert_attachment_instruction('この画像をアニメ風に変換してください。', true);
 assert_attachment_instruction('PDFを要約してください。', true);
 assert_attachment_instruction('添付ファイルを確認してください。', true);
+assert_attachment_instruction('これ参考にし！', true);
+assert_attachment_instruction('この画像はきれいです。', false);
+assert_attachment_instruction('何も依頼していません。', false);
 assert_attachment_instruction('昨日の会議は予定どおりです。', false);
 assert_attachment_instruction('よろしくお願いします。', false);
 

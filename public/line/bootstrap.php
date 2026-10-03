@@ -1100,18 +1100,26 @@ function line_agent_recent_available_attachment_ids(string $sourceKey): array
 }
 
 /**
- * グループ内の通常会話を起動しないため、添付処理を示す文言だけを判定します。
+ * グループ内の通常会話を起動しないため、実行を求める作業指示だけを判定します。
  */
-function line_agent_is_attachment_work_instruction(string $text): bool
+function line_agent_is_explicit_work_instruction(string $text): bool
 {
     $instruction = trim($text);
     if ($instruction === '') {
         return false;
     }
-    if (preg_match('/(?:添付(?:ファイル)?|画像|写真|動画|音声|PDF|Word|Excel|PowerPoint|ファイル|資料|[0-9０-９]+件目)/iu', $instruction)) {
-        return true;
-    }
-    return preg_match('/(?:要約|解析|分析|確認|修正|編集|変換|生成|作成|抽出|翻訳|説明|文字起こし|添削|校正|加工|リサイズ|切り抜き|背景|アニメ風|イラスト風|読んで|見て)/u', $instruction) === 1;
+    return preg_match(
+        '/(?:要約|解析|分析|確認(?:して|を|ください|お願い|したい)|修正|編集|変換|生成|作成|抽出|翻訳|説明|文字起こし|添削|校正|加工|リサイズ|切り抜き|背景(?:変更|削除|透過)?|アニメ風|イラスト風|読んで|見て|参考に|入力して|転記して|続けて|再開して|対応して|やって|してください|してほしい|(?:これ|それ).{0,12}お願いします)/u',
+        $instruction
+    ) === 1;
+}
+
+/**
+ * 画像やファイル名の言及だけを雑談から区別し、実行を求める添付後続指示だけを判定します。
+ */
+function line_agent_is_attachment_work_instruction(string $text): bool
+{
+    return line_agent_is_explicit_work_instruction($text);
 }
 
 /**
@@ -1126,6 +1134,20 @@ function line_agent_is_recent_group_attachment_followup(array $sourceInfo, strin
         return false;
     }
     return line_agent_recent_available_attachment_ids((string) ($sourceInfo['source_key'] ?? '')) !== [];
+}
+
+/**
+ * bot回答を引用したグループ返信を、明示的な作業指示がある場合だけ後続依頼として受け付けます。
+ *
+ * 「呼んでない」「違う」などの会話上の訂正だけで新しいジョブを作らないため、引用そのものは
+ * 呼び出し扱いにしません。添付なしの作業継続は、メンションまたは AI: 接頭辞でも指定できます。
+ */
+function line_agent_is_quoted_agent_work_followup(array $sourceInfo, string $text, array $message): bool
+{
+    if (!in_array((string) ($sourceInfo['source_type'] ?? ''), ['group', 'room'], true)) {
+        return false;
+    }
+    return line_agent_quotes_agent_message($message) && line_agent_is_explicit_work_instruction($text);
 }
 
 /**
@@ -1246,9 +1268,6 @@ function line_agent_is_addressed(array $sourceInfo, string $text, array $message
         return true;
     }
     if (line_agent_has_self_mention($message)) {
-        return true;
-    }
-    if (line_agent_quotes_agent_message($message)) {
         return true;
     }
     $trimmed = trim($text);
